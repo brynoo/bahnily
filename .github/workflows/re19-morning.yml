@@ -1,0 +1,51 @@
+name: RE19 Morgen-Check
+
+on:
+  schedule:
+    # UTC! Sommer (MESZ) und Winter (MEZ) doppelt – das Gate lässt nur 06:45–07:19 Ortszeit durch.
+    - cron: "50 4,5 * * 1-5"   # 06:50 Ortszeit
+    - cron: "5 5,6 * * 1-5"    # 07:05 Ortszeit
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Was soll laufen?"
+        type: choice
+        default: mock
+        options:
+          - mock            # kompletter Durchlauf mit erfundenen Daten, Nachricht an Telegram
+          - telegram-test   # nur Testnachricht
+          - force           # echter Check jetzt, unabhängig vom Prüffenster
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DB_CLIENT_ID: ${{ secrets.DB_CLIENT_ID }}
+      DB_API_KEY: ${{ secrets.DB_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Tests
+        run: python test_simulate.py
+
+      - name: Prüffenster
+        id: gate
+        if: github.event_name == 'schedule'
+        run: python re19watch.py --gate-only
+
+      - name: Check
+        if: github.event_name == 'schedule' && steps.gate.outputs.run == 'true'
+        run: python re19watch.py
+
+      - name: Manuell (${{ inputs.mode }})
+        if: github.event_name == 'workflow_dispatch'
+        run: python re19watch.py --${{ inputs.mode }}

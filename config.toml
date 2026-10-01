@@ -1,0 +1,132 @@
+timezone = "Europe/Berlin"
+
+[my_train]
+line = "RE 19"
+point = "Dörfles-Esbach"          # wo du einsteigst (muss in corridor.points stehen)
+planned_departure = "07:20"
+direction_contains = "Nürnberg"   # nur Züge Richtung Nürnberg zählen
+from_point = "Rödental"           # Korridor-Anfang in deiner Fahrtrichtung
+to_point = "Coburg"               # Korridor-Ende
+walk_min = 5                      # Fußweg zum Bahnhof -> "Loslaufen um"
+
+[stations]
+mine = "Dörfles-Esbach"
+coburg = "Coburg"
+# EVA-Nummern (spart die Stationssuche)
+mine_id = "8001484"
+coburg_id = "8001338"
+
+[schedule]
+window_start = "06:45"   # nur in diesem Fenster (Ortszeit) wird gecheckt
+window_end = "07:19"
+weekdays_only = true
+
+[priority]
+# Vorrang je Linie, überschreibt die Produktklasse (ICE 4, IC 3, RE 2, RB 1).
+# RE 29 (Nürnberg–Erfurt) hat laut Beobachtung Vorrang vor RE 19/RE 28, aber unter ICE.
+lines = { "RE 29" = 3, "RE 19" = 2, "RE 28" = 2 }
+
+[alarm]
+# Lauter Push-Alarm über ntfy (App "ntfy", Kanal = Env NTFY_TOPIC), nur bei Verspätung
+enabled = true
+min_delay_min = 3              # ab so viel erwarteter Verspätung
+priority = 5                   # 5 = dringend (lauter Ton, lange Vibration)
+server = "https://ntfy.sh"
+
+[api]
+# "timetables" = DB API Marketplace (Env: DB_CLIENT_ID, DB_API_KEY); "vendo" = db-vendo-client unter base_url
+provider = "timetables"
+base_url = "http://localhost:3000"
+window_before_min = 35   # ab wann vor deiner Abfahrt Coburg-Tafeln gelesen werden (Tafel = 60 min)
+
+[collect]
+# Datensammlung fürs spätere Modell (python re19watch.py --collect, per launchd alle 5 min)
+# Rund um die Uhr (24/7). Nur morgens: window_from = "04:00", window_until = "09:15", weekdays_only = true
+dir = "data"
+window_from = "00:00"
+window_until = "23:59"
+weekdays_only = false
+plan_lookahead_h = 3
+predict_from = "06:00"      # in diesem Fenster zusätzlich Modell-/DB-Prognose loggen
+predict_until = "07:45"
+# Werrabahn Coburg–Sonneberg, komplett eingleisig. Kreuzen (laut API >1 Gleis): Coburg, Rödental,
+# Neustadt(b Coburg), Sonneberg. Reine Haltepunkte: Coburg Nord, Dörfles-Esbach, Rödental Mitte, Mönchröden.
+stations = [
+  { name = "Coburg", eva = "8001338" },
+  { name = "Coburg Nord", eva = "8001334" },
+  { name = "Dörfles-Esbach", eva = "8001484" },
+  { name = "Rödental", eva = "8004633" },
+  { name = "Rödental Mitte", eva = "8005122" },
+  { name = "Mönchröden", eva = "8004064" },
+  { name = "Neustadt(b Coburg)", eva = "8004325" },
+  { name = "Sonneberg(Thür)Hbf", eva = "8013008" },
+]
+
+[collect_marschbahn]
+# Marschbahn Niebüll–Westerland, eingleisig über den Hindenburgdamm (Klanxbüll–Morsum). 24/7, nur Sammeln.
+dir = "datamarschbahn"
+window_from = "00:00"
+window_until = "23:59"
+weekdays_only = false
+plan_lookahead_h = 3
+stations = [
+  { name = "Niebüll", eva = "8004343" },
+  { name = "Klanxbüll", eva = "8003303" },
+  { name = "Morsum", eva = "8004093" },
+  { name = "Keitum", eva = "8003222" },
+  { name = "Westerland(Sylt)", eva = "8006369" },
+]
+
+[logging]
+csv = "predictions.csv"  # zum Kalibrieren: "tatsächlich"-Spalte selbst füllen
+
+# ---------------------------------------------------------------------------
+# Streckenmodell Nord -> Süd.
+# ⚠ ANNAHMEN, BITTE PRÜFEN (OpenRailwayMap):
+#   - Die ICE-Einschleifung trifft zwischen Rödental und Dörfles-Esbach auf die
+#     Werrabahn ("Abzweig SFS").
+#   - Kreuzen/überholen geht nur in Rödental und Coburg. Wenn Dörfles-Esbach
+#     oder Coburg Nord ein zweites Gleis zum Kreuzen haben: in crossing_points
+#     aufnehmen.
+# Fahrzeiten in Minuten = Abfahrt A bis Abfahrt B (bei Halt inkl. Haltezeit).
+#   regional: aus dem Fahrplan abgelesen, grob -> DEINE Werte eintragen
+#   fast (ICE/IC ohne Halt): geschätzt
+# ---------------------------------------------------------------------------
+[corridor]
+points = ["Rödental", "Abzweig SFS", "Dörfles-Esbach", "Coburg Nord", "Coburg"]
+crossing_points = ["Rödental", "Coburg"]
+coburg_point = "Coburg"
+junction_point = "Abzweig SFS"
+werrabahn_end = "Rödental"
+opposing_buffer_min = 1.0     # Puffer, bis ein Gegenzug einfahren darf
+following_headway_min = 2.0   # Mindestabstand hintereinander
+
+[[corridor.segment]]
+from = "Rödental"
+to = "Abzweig SFS"
+regional = 2.0
+fast = 1.0
+
+[[corridor.segment]]
+from = "Abzweig SFS"
+to = "Dörfles-Esbach"
+regional = 1.0   # Rödental -> Dörfles-Esbach zusammen = deine 3 min
+fast = 0.5
+
+[[corridor.segment]]
+from = "Dörfles-Esbach"
+to = "Coburg Nord"
+regional = 3.0
+fast = 1.5
+
+[[corridor.segment]]
+from = "Coburg Nord"
+to = "Coburg"
+regional = 2.0
+fast = 1.5
+# double_track = true   # falls dieser Abschnitt zweigleisig ist
+
+# Über welche Ziele/Herkunftsorte ein Zug in Coburg in den Korridor fährt
+[classify]
+via_sfs = ["Erfurt", "Berlin", "Hamburg", "Leipzig", "Halle", "Lutherstadt"]
+via_werrabahn = ["Sonneberg", "Neustadt", "Rödental"]
