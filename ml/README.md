@@ -236,3 +236,13 @@ bei dem einen kombinierten Feature.
 **Nicht einbezogen:** agilis, RB, STB und Bus. Die stehen auf den Tafeln von Coburg und
 Sonneberg, fahren den Abschnitt Coburg–Sonneberg aber nicht. Sie als Konfliktzüge
 mitzunehmen wurde getestet und verschlechtert das Modell messbar (07:20: 2,21 statt 2,16).
+
+## Hinweis zum Prognose-Protokoll (predictions.jsonl)
+
+Bis Oktober 2026 hat `collect.py` unter dem Schlüssel `model_estimate` das
+**Regelmodell** (`est.estimate`) protokolliert, nicht das ML-Modell – `est.ml_estimate`
+wurde gar nicht geschrieben. In Dateien aus diesem Zeitraum ist die ML-Prognose daher
+nicht rekonstruierbar; sichtbar ist nur die fertige Systemausgabe (`expected_delay_min`),
+in die das ML-Modell eingeht. Seit dem Fix heißen die Felder `rule_estimate` und
+`ml_estimate`. Der Fehler fiel nicht auf, weil `test_simulate.py` die Feldnamen des
+Protokolls nicht prüft.

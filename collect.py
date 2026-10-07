@@ -107,7 +107,12 @@ def prediction_record(now: datetime, info: dict, source: str) -> dict:
         "snapshot": now.isoformat(), "source": source, "trip_id": me.trip_id, "line": me.line,
         "planned": est.planned.isoformat(), "db_when": est.db_when.isoformat(),
         "sim_plan": est.sim_plan.isoformat(), "sim_prog": est.sim_prog.isoformat(),
-        "model_estimate": est.estimate.isoformat(), "expected": dep.isoformat(), "expected_delay_min": delay,
+        # "rule_estimate" = physikalisches Regelmodell, "ml_estimate" = ML-Modell.
+        # Bis 10/2026 hiess das Regelmodell hier irrtuemlich "model_estimate", wodurch
+        # im Protokoll nicht zu sehen war, was das ML-Modell wirklich gesagt hat.
+        "rule_estimate": est.estimate.isoformat(),
+        "ml_estimate": est.ml_estimate.isoformat() if est.ml_estimate else None,
+        "expected": dep.isoformat(), "expected_delay_min": delay,
         "extra_vs_db_min": est.extra_vs_db.total_seconds() / 60,
         "baseline_error_min": est.baseline_error.total_seconds() / 60,
         "holds": [{
