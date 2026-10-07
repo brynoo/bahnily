@@ -37,8 +37,18 @@ python3 -m venv .venv
 | Schritt | Skript | Ergebnis |
 |---|---|---|
 | 1 | `extract_2025.py` | streamt `~/Downloads/2025.tar` (19 GB, Mobilithek / Bahn-Vorhersage) und filtert auf die 13 Werrabahn-/Marschbahn-EVAs → `data/werrabahn_marschbahn_2025.parquet` (31 MB) |
-| 2 | `build_features.py` | baut die Feature-Tabelle, 10 129 Trainingsbeispiele → `data/features_werrabahn.parquet` |
+| 2 | `build_features.py` | baut die Feature-Tabelle, 8762 Beispiele (nach Entfernen der Leakage-Zeilen) → `data/features_werrabahn.parquet` |
 | 3 | `train_model.py` | trainiert und evaluiert → `model_werrabahn.joblib` |
+
+Danach zur Überprüfung, in dieser Reihenfolge:
+
+| Skript | Zweck |
+|---|---|
+| `zielpruefung.py` | prüft die drei Projektziele an den Daten (Konfliktfälle, Alltag vs. DB, Alarmquote) |
+| `replay_2025.py` | lässt das physikalische Regelmodell über das ganze Jahr laufen → `data/replay_2025.parquet` (nötig für den Veto-Vergleich in `zielpruefung.py`) |
+| `schwere_faelle.py` | Auswertung der schwersten Einzelfälle, leave-one-day-out |
+| `backtest_eigene_daten.py` | Gegenprobe auf den selbst gesammelten Daten des aktuellen Fahrplanjahres |
+| `predict_now.py` | eine einzelne Live-Prognose nachrechnen |
 
 Das Archiv wird **nie vollständig entpackt** (Platzbedarf), sondern Tagesdatei für
 Tagesdatei im Speicher verarbeitet.
