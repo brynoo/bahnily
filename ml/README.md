@@ -246,3 +246,38 @@ nicht rekonstruierbar; sichtbar ist nur die fertige Systemausgabe (`expected_del
 in die das ML-Modell eingeht. Seit dem Fix heißen die Felder `rule_estimate` und
 `ml_estimate`. Der Fehler fiel nicht auf, weil `test_simulate.py` die Feldnamen des
 Protokolls nicht prüft.
+
+## Schwere Verspätungsfälle als Testmaterial (`schwere_faelle.py`)
+
+Der 2025er-Datensatz enthält für die Werrabahn reichlich Störungsmaterial –
+8762 auswertbare RE19-Abfahrten in Dörfles-Esbach, davon:
+
+| Verspätung | Fälle |
+|---|---|
+| ≥ 15 min | 160 |
+| ≥ 30 min | 45 |
+| ≥ 60 min | 8 |
+
+Entscheidend fürs Testen ist aber nicht die Höhe, sondern ob die Verspätung zum
+Abfragezeitpunkt T (15 min vor Abfahrt) überhaupt **sichtbar** war. Von den 94 Fällen
+ab 20 Minuten:
+
+- **72** zeigten um T schon ein Signal ≥ 5 min (DB-Prognose, Oberlauf, Konfliktzug,
+  ICE oder vorausfahrender Zug) – diese sind prinzipiell vorhersagbar
+- **22** waren um T völlig unsichtbar – hier kann kein Modell etwas leisten
+
+Die wertvollsten Testfälle sind die, wo die **DB-Prognose blind war, das Streckensignal
+aber nicht** – genau der Zweck des Projekts. Beispiele für den 07:20-Zug:
+
+| Tag | DB um 07:05 | Signal um 07:05 | tatsächlich | Modell (ohne diesen Tag trainiert) |
+|---|---|---|---|---|
+| 2025-11-18 | +1 | +9 | **+27** | +6,2 |
+| 2025-12-11 | +1 | +7 | **+14** | +3,8 |
+| 2025-11-21 | +10 | +14 | **+28** | +16,0 |
+| 2025-02-03 | +15 | +15 | **+30** | +24,7 |
+
+`schwere_faelle.py` wertet diese Fälle mit *leave-one-day-out* aus: der jeweilige Testtag
+wird aus dem Training entfernt. Die Zahlen dort sind bewusst **keine** Leistungskennzahl –
+es ist eine verzerrte Extremstichprobe, in der das Modell die Mehrzahl der Einzelfälle
+gewinnt, im Mittelwert aber verliert, weil es schon sichtbare große DB-Werte zur Mitte
+dämpft. Belastbare Zahlen stehen im [Haupt-README](../README.md).
