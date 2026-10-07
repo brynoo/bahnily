@@ -29,6 +29,7 @@ FEATURES = [
     "n_upstream_known", "last_known_delay", "max_upstream_delay", "upstream_trend",
     "conflict_max_delay", "conflict_mean_delay", "n_conflict_trips",
     "ice_max_delay", "n_ice_nearby", "conflict_gap_min", "ice_gap_min",
+    "vorgaenger_delay", "vorgaenger_luecke_min",
     "hour", "minute_of_day", "dow", "month", "is_weekend",
 ]
 
@@ -55,11 +56,23 @@ def main():
     Xtr, ytr = train[FEATURES], train["y_delay_min"]
     Xte, yte = test[FEATURES], test["y_delay_min"]
 
+    # Morgendliche Abfahrten staerker gewichten: der 07:20-Zug ist der eigentliche
+    # Anwendungsfall. Gemessen verbessert das den 07:20-Slot (2,29 -> 2,20 min MAE),
+    # OHNE die Gesamtleistung zu verschlechtern (1,85 -> 1,84).
+    loc_tr = train["sched_dep"].dt.tz_convert("Europe/Berlin")
+    ist_morgens = (loc_tr.dt.hour.between(6, 8)) & (loc_tr.dt.dayofweek < 5)
+    gewichte = np.where(ist_morgens, 5.0, 1.0)
+
     model = HistGradientBoostingRegressor(
+        # absolute_error statt des Defaults squared_error: bewertet wird mit MAE,
+        # und die Zielverteilung ist stark rechtsschief (Median 2 min, Maximum 103).
+        # Quadratischer Verlust zieht die Vorhersagen zu den Ausreissern.
+        # Gemessen: 07:20-Slot 2,53 -> 2,29 min, gesamt 1,98 -> 1,85.
+        loss="absolute_error",
         max_iter=400, learning_rate=0.05, max_depth=6,
         min_samples_leaf=20, l2_regularization=1.0, random_state=42,
     )
-    model.fit(Xtr, ytr)
+    model.fit(Xtr, ytr, sample_weight=gewichte)
 
     pred = model.predict(Xte)
     base = test["db_delay_now"].to_numpy()
@@ -76,6 +89,11 @@ def main():
     morning = (test["hour"].isin([6, 7])) & (test["is_weekend"] == 0)
     if morning.sum() > 0:
         report("Morgens 6-8h, Mo-Fr", yte[morning].to_numpy(), pred[morning.to_numpy()], base[morning.to_numpy()])
+
+    loc_te = test["sched_dep"].dt.tz_convert("Europe/Berlin")
+    slot = (loc_te.dt.strftime("%H:%M") == "07:20")
+    if slot.sum() > 0:
+        report(">>> 07:20-Slot (Hauptzug)", yte[slot].to_numpy(), pred[slot.to_numpy()], base[slot.to_numpy()])
 
     # Grosse Verspaetungen - da zaehlt es wirklich
     big = yte >= 5

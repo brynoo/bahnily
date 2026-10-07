@@ -24,6 +24,7 @@ OUT = str(DATA / "features_werrabahn.parquet")
 
 LEAD_MIN = 15          # Abfrage so viele Minuten vor planmaessiger Abfahrt
 CONFLICT_WINDOW = 30   # +/- Minuten um meine Soll-Abfahrt fuer Konfliktzuege
+VOR_WINDOW = 45        # so weit zurueck wird nach dem vorausfahrenden Zug gesucht
 
 DOERFLES = 8001484
 # Korridor Nord -> Sued; Upstream = alles noerdlich von Doerfles
@@ -46,10 +47,12 @@ def main():
 
     # ---------------- Zielgroesse: finale Abfahrtsverspaetung RE19 in Doerfles ----------------
     tgt = w[(w["line"] == "RE19") & (w["stop_id"] == DOERFLES) & (~w["is_arrival"]) & (w["is_final"])]
-    tgt = tgt.groupby("trip_id", as_index=False).last()[
-        ["trip_id", "time_schedule", "delay_min", "is_cancelled", "update_timestamp", "time_real"]
-    ].rename(columns={"delay_min": "y_delay_min", "time_schedule": "sched_dep",
-                      "update_timestamp": "final_ts"})
+    tgt = (tgt.sort_values(["trip_id", "update_timestamp"])
+           .drop_duplicates("trip_id", keep="last")
+           [["trip_id", "time_schedule", "delay_min", "is_cancelled", "update_timestamp", "time_real"]]
+           .rename(columns={"delay_min": "y_delay_min", "time_schedule": "sched_dep",
+                            "update_timestamp": "final_ts"})
+           .copy())
     tgt = tgt[~tgt["is_cancelled"]].drop(columns=["is_cancelled"])
     tgt["T"] = tgt["sched_dep"] - pd.Timedelta(minutes=LEAD_MIN)
     n_roh = len(tgt)
@@ -67,11 +70,17 @@ def main():
     leak = tgt["final_ts"] <= tgt["T"]
     tgt = tgt[~leak].copy()
     # Flag, ob der Zielwert nach Eintreten der Zeit bestaetigt wurde (echte Beobachtung)
+    # Flag bleibt als SPALTE erhalten, wird aber NICHT zum Filtern benutzt.
+    # Gemessen: Filtern auf verifizierte Zeilen verschlechtert das Modell deutlich
+    # (07:20-Slot 2,53 -> 2,86 min MAE). Grund ist ein Selektionsbias - die DB
+    # schickt bei verspaeteten Zuegen weiter Updates, puenktliche bekommen nie eine
+    # Bestaetigung. Verifizierte Zeilen enthalten daher 22 % schwere Faelle statt
+    # 13,6 %, und es gingen 58 % der Trainingsdaten verloren.
     tgt["ziel_verifiziert"] = (tgt["final_ts"] - tgt["time_real"]).dt.total_seconds() / 60 >= 1
     tgt = tgt.drop(columns=["final_ts", "time_real"])
     print(f"Zielereignisse roh: {n_roh}, nach Entfernen von {leak.sum()} geleakten Zeilen: {len(tgt)}")
     print(f"  davon Zielwert nachweislich beobachtet: {tgt['ziel_verifiziert'].sum()} "
-          f"({tgt['ziel_verifiziert'].mean()*100:.1f}%)")
+          f"({tgt['ziel_verifiziert'].mean()*100:.1f} %) - nur als Information, kein Filter")
 
     # ---------------- Point-in-time: was war zum Zeitpunkt T bekannt? ----------------
     # (a) DB-eigene Prognose fuer genau diese Abfahrt, Stand T  -> Baseline
@@ -119,7 +128,8 @@ def main():
         cday = conf_src[conf_src["date"] == d]
         if cday.empty:
             for _, r in g.iterrows():
-                rows.append((r["trip_id"], np.nan, np.nan, 0))
+                rows.append((r["trip_id"], np.nan, np.nan, 0,
+                             np.nan, 0, np.nan, np.nan))
             continue
         for _, r in g.iterrows():
             lo = r["sched_dep"] - pd.Timedelta(minutes=CONFLICT_WINDOW)
@@ -157,6 +167,53 @@ def main():
                                        "n_conflict_trips", "ice_max_delay", "n_ice_nearby",
                                        "conflict_gap_min", "ice_gap_min"])
     tgt = tgt.merge(conf, on="trip_id", how="left")
+
+    # ---------------- Vorausfahrender Zug (gleiche Richtung) ----------------
+    # Auf dem eingleisigen Abschnitt blockiert der Zug VOR mir unmittelbar meine
+    # Fahrstrasse - "Verspaetung eines vorausfahrenden Zuges" (Code 43) ist der
+    # zweithaeufigste Verspaetungsgrund in den RE19-Daten. Nur Werrabahn-Linien:
+    # agilis/RB/STB/Bus stehen zwar auf den Tafeln von Coburg und Sonneberg,
+    # fahren den Abschnitt Coburg-Sonneberg aber nicht. Der ICE haelt in Doerfles
+    # nicht (er kommt ueber die SFS-Einschleifung) und steckt in den Konfliktfeatures.
+    # Gemessen ueber 5 gleitende Zweimonatsfenster: Gesamt-MAE 1,73 -> 1,65 min,
+    # 07:20-Slot 2,40 -> 2,28; vorgaenger_delay ist danach das staerkste Feature
+    # ueberhaupt (Permutation Importance 0,24 gegenueber 0,13 fuer db_delay_now).
+    #
+    # Nachgemessen, welcher Zug das Signal traegt (ohne Richtungsfilter erfasst das
+    # Feature beide): es ist fast ausschliesslich der GEGENZUG (Korrelation 0,26 bei
+    # n=7477) und kaum der Zug in gleicher Richtung (0,09 bei n=1878). Passt zur
+    # Strecke: gleiche Richtung fahrt im Stundentakt, da ist der Abstand nie knapp -
+    # der Gegenzug muss aber kreuzen, und gekreuzt wird nur in Roedental und Coburg.
+    # Eine Aufteilung in zwei getrennte Features (gleiche Richtung / Gegenrichtung)
+    # plus ein Richtungsfeature wurde getestet und bringt nichts (1,64 statt 1,65;
+    # 07:20 unveraendert 2,28), deshalb bleibt es bei dem einen kombinierten Feature.
+    re_dep = w[(w["stop_id"] == DOERFLES) & (~w["is_arrival"])
+               & (w["line"].isin(["RE19", "RE28", "RE29"]))]
+    plan_dep = (re_dep.sort_values("update_timestamp")
+                .drop_duplicates("trip_id", keep="first")[["trip_id", "time_schedule"]]
+                .sort_values("time_schedule").reset_index(drop=True))
+    obs_vor = {k: v for k, v in re_dep[["trip_id", "update_timestamp", "delay_min"]]
+               .sort_values("update_timestamp").groupby("trip_id")}
+
+    vor = []
+    for _, r in tgt.iterrows():
+        frueher = plan_dep[(plan_dep["time_schedule"] < r["sched_dep"]) &
+                           (plan_dep["time_schedule"] >= r["sched_dep"] - pd.Timedelta(minutes=VOR_WINDOW))]
+        if frueher.empty:
+            vor.append((r["trip_id"], np.nan, np.nan))
+            continue
+        v = frueher.iloc[-1]
+        b = obs_vor.get(v["trip_id"])
+        delay = np.nan
+        if b is not None:
+            b = b[b["update_timestamp"] <= r["T"]]   # nur was zum Abfragezeitpunkt bekannt war
+            if len(b):
+                delay = b["delay_min"].iloc[-1]
+        vor.append((r["trip_id"], delay,
+                    (r["sched_dep"] - v["time_schedule"]).total_seconds() / 60))
+    tgt = tgt.merge(pd.DataFrame(vor, columns=["trip_id", "vorgaenger_delay",
+                                               "vorgaenger_luecke_min"]),
+                    on="trip_id", how="left")
 
     # ---------------- Kalender / Kontext ----------------
     loc = tgt["sched_dep"].dt.tz_convert("Europe/Berlin")

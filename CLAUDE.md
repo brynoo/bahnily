@@ -4,7 +4,7 @@
 Morgendliche Telegram-Warnung (Mo–Fr, Fenster 06:45–07:19), ob der RE 19 ab Dörfles-Esbach 07:20
 Richtung Nürnberg auf dem eingleisigen Abschnitt Rödental – Coburg von einem Zug mit Vorrang
 (v. a. ICE über die Einschleifung der SFS Nürnberg–Erfurt) aufgehalten wird – bevor der
-DB Navigator die Verspätung zeigt. Langfristig: Proof-of-Concept für eine Bewerbung bei DB Systel.
+DB Navigator die Verspätung zeigt.
 
 ## Architektur
 - `simulate.py` – reine Logik, kein Netzwerk. Korridor = Punktkette Nord→Süd mit Fahrzeiten je
@@ -28,7 +28,7 @@ DB Navigator die Verspätung zeigt. Langfristig: Proof-of-Concept für eine Bewe
   `re19-collect` alle 5 min, `re19-alarm` Mo–Fr 07:00), `deploy/pull.sh` (Daten nach `cloud-data/`),
   `deploy/status.sh`. Sammlung Werrabahn + Marschbahn 24/7.
 - `config.toml` – Streckenmodell, Fahrzeiten, Zug, Prüffenster.
-- `.github/workflows/re19-morning.yml` – Cron (UTC, Sommer+Winter doppelt, Gate filtert),
+- `.github/workflows/re19-morning.yml` (vorhanden) – Cron (UTC, Sommer+Winter doppelt, Gate filtert),
   Secrets `DB_CLIENT_ID`, `DB_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
 ## Geprüft (OSM/OpenRailwayMap + bahn.de, 23.09.2026)
@@ -45,8 +45,10 @@ DB Navigator die Verspätung zeigt. Langfristig: Proof-of-Concept für eine Bewe
   (Rödental → Dörfles-Esbach = 3 min laut Benjamin).
 
 ## Nächste Schritte
-1. GitHub-Workflow anlegen (Secrets DB_CLIENT_ID, DB_API_KEY, Telegram; Cron für 06:45–07:15), kein Docker nötig.
-2. Kalibrieren über predictions.csv (tatsächliche Abfahrt manuell eintragen).
+1. Kalibrieren über predictions.csv (tatsächliche Abfahrt manuell eintragen).
+2. Zweiter Check um ~07:14 (gemessen MAE 1,66 statt 1,84) – näher an der Abfahrt, aber
+   weniger Vorlauf zum Losgehen.
+3. 2024er Trainingsdaten ergänzen (verdoppelt die Datenmenge).
 
 ## Konventionen
 - Tests: `python test_simulate.py` (ohne Internet). Nach Logikänderungen immer laufen lassen.

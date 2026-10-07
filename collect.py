@@ -150,7 +150,8 @@ def collect(cfg: dict, now: datetime, client: rw.TimetablesClient, data_dir: Pat
     raw = day / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     n_plan = n_chg = 0
-    state = data_dir / "last_changes.json"
+    # Der erste Stand eines neuen Tages muss unabhaengig vom Vortag erfasst werden.
+    state = day / "last_changes.json"
     try:
         seen = json.loads(state.read_text())
     except (OSError, ValueError):

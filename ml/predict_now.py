@@ -34,6 +34,7 @@ UPSTREAM = ["8013008", "8004325", "8004064", "8005122", "8004633"]
 UP_NAME = {"8013008": "sonneberg", "8004325": "neustadt", "8004064": "moenchroeden",
            "8005122": "roedentalmitte", "8004633": "roedental"}
 CONFLICT_WINDOW = 30
+VOR_WINDOW = 45        # Suchfenster fuer den vorausfahrenden Zug (wie im Training)
 
 FEATURES = [
     "db_delay_now",
@@ -41,6 +42,7 @@ FEATURES = [
     "n_upstream_known", "last_known_delay", "max_upstream_delay", "upstream_trend",
     "conflict_max_delay", "conflict_mean_delay", "n_conflict_trips",
     "ice_max_delay", "n_ice_nearby", "conflict_gap_min", "ice_gap_min",
+    "vorgaenger_delay", "vorgaenger_luecke_min",
     "hour", "minute_of_day", "dow", "month", "is_weekend",
 ]
 
@@ -126,18 +128,24 @@ def main():
     row["max_upstream_delay"] = np.nanmax(ups_arr) if len(valid) else np.nan
     row["upstream_trend"] = (valid[-1] - valid[0]) if len(valid) else np.nan
 
-    # Konfliktzuege RE28/RE29 im Zeitfenster
+    # Konfliktzuege RE28/RE29/ICE im Zeitfenster
     lo, hi = sched_dep - timedelta(minutes=CONFLICT_WINDOW), sched_dep + timedelta(minutes=CONFLICT_WINDOW)
-    cdel, ntrips = [], set()
+    cdel, ntrips, ice_delays, ice_passages, passages = [], set(), [], [], []
     for (t2, eva2, kind2), pl2 in plan_by.items():
         if t2 == trip or not pl2 or not (lo <= pl2 <= hi):
             continue
-        if meta.get(t2, {}).get("line") not in ("RE28", "RE29"):
+        info = meta.get(t2, {})
+        if info.get("line") not in ("RE28", "RE29") and info.get("category") != "ICE":
             continue
         ntrips.add(t2)
         d = delay_min(t2, eva2, kind2)
         if not np.isnan(d):
             cdel.append((t2, d))
+            passage = pl2 + timedelta(minutes=d)
+            passages.append(passage)
+            if info.get("category") == "ICE":
+                ice_delays.append(d)
+                ice_passages.append(passage)
     if cdel:
         per_trip = pd.DataFrame(cdel, columns=["trip", "d"]).groupby("trip")["d"].last()
         row["conflict_max_delay"] = per_trip.max()
@@ -146,6 +154,25 @@ def main():
         row["conflict_max_delay"] = np.nan
         row["conflict_mean_delay"] = np.nan
     row["n_conflict_trips"] = len(ntrips)
+    row["ice_max_delay"] = max(ice_delays) if ice_delays else np.nan
+    row["n_ice_nearby"] = len({t2 for t2 in ntrips if meta.get(t2, {}).get("category") == "ICE"})
+    row["conflict_gap_min"] = min(abs((p - sched_dep).total_seconds() / 60) for p in passages) if passages else np.nan
+    row["ice_gap_min"] = min(abs((p - sched_dep).total_seconds() / 60) for p in ice_passages) if ice_passages else np.nan
+
+    # Vorausfahrender/kreuzender Zug: letzte RE19/RE28/RE29-Abfahrt in Doerfles vor
+    # meiner (Fenster VOR_WINDOW). Staerkstes Feature des Modells - das Signal kommt
+    # vor allem von Gegenzuegen, die auf dem eingleisigen Abschnitt kreuzen muessen.
+    vor = [(pl2, t2) for (t2, eva2, kind2), pl2 in plan_by.items()
+           if eva2 == DOERFLES and kind2 == "departure" and t2 != trip and pl2
+           and meta.get(t2, {}).get("line") in ("RE19", "RE28", "RE29")
+           and sched_dep - timedelta(minutes=VOR_WINDOW) <= pl2 < sched_dep]
+    if vor:
+        pl_vor, t_vor = max(vor)
+        row["vorgaenger_delay"] = delay_min(t_vor, DOERFLES, "departure")
+        row["vorgaenger_luecke_min"] = (sched_dep - pl_vor).total_seconds() / 60
+    else:
+        row["vorgaenger_delay"] = np.nan
+        row["vorgaenger_luecke_min"] = np.nan
 
     loc = sched_dep.astimezone(TZ)
     row["hour"] = loc.hour

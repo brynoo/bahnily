@@ -6,3 +6,4 @@ predictions.csv
 data/
 datamarschbahn/
 cloud-data/
+.DS_Store

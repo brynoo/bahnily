@@ -77,6 +77,59 @@ auch einen Großteil der schlechten Tage — es ist ein Frühwarnsignal, kein Si
 
 Nachrechnen: `python backtest_eigene_daten.py`
 
+## Kombinierte Pipeline (`kombiniert.py`)
+
+Die beiden Modelle können unterschiedliche Dinge, deshalb werden sie kombiniert:
+
+| | kann | kann nicht |
+|---|---|---|
+| **Regelmodell** (`simulate.py`) | erkennt, ob ein Vorrangzug zeitlich ins eigene Fenster fällt | die Höhe beziffern (sagt 18 min, real ~7) |
+| **ML-Modell** | eine bestehende Verspätung fortschreiben (85 % besser als DB bei ≥5 min) | strukturelle Konflikte sehen (flache Antwort im Szenariotest) |
+
+Ablauf: Regelmodell prüft auf Konflikt → falls ja, wird seine Minutenangabe **verworfen**
+und durch den empirischen Median aus 553 realen 2025er-Fällen ersetzt → Ergebnis ist
+`max(ML-Prognose, eigene Verspätung + Konfliktzuschlag)`.
+
+### Empirische Validierung des Konfliktfensters
+
+Aus 553 realen Fällen, in denen tatsächlich ein ICE im Konfliktfenster fuhr
+(verifizierte Ist-Werte):
+
+| ICE real verspätet | n | RE 19 Ist (Median) |
+|---|---|---|
+| pünktlich | 68 | 1 min |
+| 1–3 min | 236 | 1 min |
+| 3–5 min | 81 | 3 min |
+| 5–8 min | 31 | 4 min |
+| **8–12 min** | **37** | **7 min** ← Spitze |
+| 12–20 min | 36 | 1 min |
+| > 20 min | 64 | 3 min |
+
+**Das Regelmodell traf das Fenster exakt.** Es meldet Konflikt bei ICE +8 bis +12 —
+genau dort springt die reale Verspätung von 1 auf 7 Minuten und fällt danach wieder
+zurück (der ICE ist dann so spät, dass der RE 19 längst in Coburg steht).
+
+### Was die Pipeline kann und was nicht
+
+Out-of-sample geprüft (Kalibrierung auf Jan–Sep 2025, Test auf Okt–Dez):
+
+- **Erkennung: belastbar.** Jede Gruppe liegt 1–2 min neben dem tatsächlichen Wert,
+  das Konfliktfenster ist auch in den ungesehenen Daten die Spitze.
+- **Bezifferung: nicht belastbar.** MAE 3,00 min gegenüber 3,20 min für eine konstante
+  Vorhersage von 2 Minuten — nur 6 % besser. Die Streuung innerhalb des kritischen
+  Fensters (0 bis 43 min bei Median 7) ist größer als der Unterschied zwischen den
+  Gruppen.
+
+Deshalb gibt `kombiniert.py` eine **Spanne (p25–p90) und eine Risikostufe** aus statt
+einer Punktzahl. Die Aussage lautet „heute ist ein Risikotag, rechne mit 5–12 Minuten",
+nicht „du wirst 7 Minuten zu spät sein".
+
+**Einschränkung des Szenariotests:** `szenario_test.py` und die Demo in `kombiniert.py`
+füttern das ML-Modell mit konstruierten Feature-Vektoren (alle Oberlauf-Verspätungen
+exakt 0), wie sie real selten vorkommen. Die ML-Spalte reagiert dort entsprechend
+unruhig und sollte nicht überinterpretiert werden — der belastbare ML-Beleg sind die
+Backtests auf echten Daten.
+
 ## ⚠ Datenleckage im Quelldatensatz (wichtig)
 
 Der Mobilithek-Datensatz markiert den letzten empfangenen Echtzeitstand als
@@ -145,3 +198,41 @@ Daten aus dem aktuellen Fahrplanjahr zum Nachtrainieren.
 - Zielgröße enthält Ausreißer bis −11 min (Zug „zu früh"), vermutlich Artefakte aus
   kurzfristigen Fahrplanänderungen. Nicht bereinigt.
 - Nur Dörfles-Esbach als Zielpunkt, nur RE 19 als Zielzug.
+
+## Vorausfahrender/kreuzender Zug (Oktober 2026)
+
+Das Modell kannte als Konfliktzüge nur RE28, RE29 und ICE in einem ±30-min-Fenster,
+aber nicht den Zug, der unmittelbar vor mir über den eingleisigen Abschnitt gefahren
+ist – obwohl „Verspätung eines vorausfahrenden Zuges" (Code 43) der zweithäufigste
+Verspätungsgrund in den RE19-Daten ist. Zwei neue Features schließen die Lücke:
+
+- `vorgaenger_delay` – Verspätung der letzten RE19/RE28/RE29-Abfahrt in Dörfles-Esbach
+  vor meiner (Fenster 45 min), Stand zum Abfragezeitpunkt T
+- `vorgaenger_luecke_min` – planmäßiger Abstand zu diesem Zug
+
+Gemessen über fünf gleitende Zweimonatsfenster (jeweils nur mit Daten vor dem Fenster
+trainiert), sowie am Backtest auf eigenen Daten:
+
+| Slice | vorher | nachher | DB-Prognose |
+|---|---|---|---|
+| Gesamt (2025, 5 Fenster, n=6816) | 1,73 | **1,65** | 2,05–2,36 |
+| 07:20-Slot (n=228) | 2,40 | **2,28** | 3,24 |
+| morgens 6–8 h Mo–Fr (n=727) | 2,54 | **2,40** | 3,46 |
+| Ist ≥ 5 min (n=1229) | 5,27 | **4,89** | 6,24 |
+| eigene Daten 2026 (n=133) | 1,78 | **1,66** | 1,92 |
+| eigene Daten, Ist ≥ 5 min (n=22) | – | **4,68** | 6,64 |
+
+`vorgaenger_delay` ist danach das stärkste Feature des Modells (Permutation Importance
+0,26 gegenüber 0,13 für die DB-Prognose selbst).
+
+**Woher das Signal kommt:** nachgemessen trägt es fast nur der *Gegenzug*
+(Korrelation 0,26 bei n=7477), kaum der Zug in gleicher Richtung (0,09 bei n=1878).
+Das passt zur Strecke – in gleicher Richtung fährt der Stundentakt, da wird der Abstand
+nie knapp; der Gegenzug muss aber kreuzen, und gekreuzt werden kann nur in Rödental
+und Coburg. Eine Aufspaltung in getrennte Features je Richtung plus ein explizites
+Richtungsfeature wurde getestet und bringt nichts (1,64 statt 1,65), deshalb bleibt es
+bei dem einen kombinierten Feature.
+
+**Nicht einbezogen:** agilis, RB, STB und Bus. Die stehen auf den Tafeln von Coburg und
+Sonneberg, fahren den Abschnitt Coburg–Sonneberg aber nicht. Sie als Konfliktzüge
+mitzunehmen wurde getestet und verschlechtert das Modell messbar (07:20: 2,21 statt 2,16).

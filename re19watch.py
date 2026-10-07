@@ -111,6 +111,17 @@ TT_BASE = "https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1"
 TT_PRODUCT = {"ICE": "nationalExpress", "IC": "national", "EC": "national", "RE": "regionalExpress",
               "IRE": "regionalExpress", "S": "suburban"}
 
+ML_FEATURES = [
+    "db_delay_now", "up_sonneberg", "up_neustadt", "up_moenchroeden", "up_roedentalmitte", "up_roedental",
+    "n_upstream_known", "last_known_delay", "max_upstream_delay", "upstream_trend",
+    "conflict_max_delay", "conflict_mean_delay", "n_conflict_trips", "ice_max_delay", "n_ice_nearby",
+    "conflict_gap_min", "ice_gap_min", "vorgaenger_delay", "vorgaenger_luecke_min",
+    "hour", "minute_of_day", "dow", "month", "is_weekend",
+]
+VOR_WINDOW_MIN = 45   # muss zu VOR_WINDOW in ml/build_features.py passen
+UPSTREAM = [("8013008", "sonneberg"), ("8004325", "neustadt"), ("8004064", "moenchroeden"),
+            ("8005122", "roedentalmitte"), ("8004633", "roedental")]
+
 
 def _tt_time(s: str | None, tz: ZoneInfo) -> datetime | None:
     return datetime.strptime(s, "%y%m%d%H%M").replace(tzinfo=tz) if s else None
@@ -171,12 +182,15 @@ class TimetablesClient:
         when = when.astimezone(self.tz)
         end = when + timedelta(minutes=duration)
         changes = {s.get("id"): s for s in self._get(f"fchg/{station_id}")}
-        out, seen, h = [], set(), when.replace(minute=0, second=0, microsecond=0)
+        search_start = when - timedelta(minutes=120)
+        out, seen, h = [], set(), search_start.replace(minute=0, second=0, microsecond=0)
         while h < end:
             for s in self._get(f"plan/{station_id}/{h:%y%m%d}/{h:%H}"):
                 sid = s.get("id")
                 ev = parse_tt_stop(s, changes.get(sid), kind, self.tz)
-                if ev and sid not in seen and ev.planned and when <= ev.planned < end:
+                in_window = ev and ev.planned and when <= ev.planned < end
+                delayed_into_window = ev and ev.when and when <= ev.when < end
+                if ev and sid not in seen and (in_window or delayed_into_window):
                     seen.add(sid)
                     out.append(ev)
             h += timedelta(hours=1)
@@ -309,6 +323,93 @@ def build_others(deps: list[Event], arrs: list[Event], cfg: dict, c: Corridor, u
     return out
 
 
+def _event_delay_at(client: DbClient, trip_id: str | None, station_id: str, planned: datetime) -> float | None:
+    if not trip_id:
+        return None
+    for kind in ("departures", "arrivals"):
+        for ev in client.board(station_id, kind, planned - timedelta(minutes=60), 120):
+            if ev.trip_id == trip_id and ev.delay_min is not None:
+                return ev.delay_min
+    return None
+
+
+def ml_prediction(client: DbClient, cfg: dict, me_ev: Event, deps: list[Event], arrs: list[Event],
+                  planned: datetime, now: datetime,
+                  my_board: list[Event] | None = None) -> tuple[datetime | None, float | None]:
+    """Point-in-time ML-Schaetzung; bei fehlendem Artefakt bleibt die Regelpipeline aktiv."""
+    try:
+        import joblib
+        import numpy as np
+        import pandas as pd
+
+        model = joblib.load(HERE / "ml" / "model_werrabahn.joblib")
+    except (ImportError, OSError, ValueError):
+        return None, None
+
+    row = {feature: np.nan for feature in ML_FEATURES}
+    row["db_delay_now"] = me_ev.delay_min if me_ev.delay_min is not None else np.nan
+    upstream = []
+    station_ids = {str(s["eva"]): str(s["eva"]) for s in cfg.get("collect", {}).get("stations", [])}
+    for eva, name in UPSTREAM:
+        delay = _event_delay_at(client, me_ev.trip_id, station_ids.get(eva, eva), planned)
+        row["up_" + name] = delay if delay is not None else np.nan
+        upstream.append(row["up_" + name])
+    known = [value for value in upstream if not np.isnan(value)]
+    row["n_upstream_known"] = len(known)
+    row["last_known_delay"] = known[-1] if known else np.nan
+    row["max_upstream_delay"] = max(known) if known else np.nan
+    row["upstream_trend"] = known[-1] - known[0] if known else np.nan
+
+    # WICHTIG: exakt dieselbe Zugauswahl wie im Training (ml/build_features.py),
+    # sonst sieht das Modell im Betrieb eine andere Feature-Verteilung als beim
+    # Lernen. Trainiert wurde nur auf RE28 (Gegenrichtung) sowie RE29 und ICE
+    # (beide ueber die SFS-Einschleifung) - nicht auf RB24, RE32 oder S-Bahnen.
+    def _ist_konfliktzug(ev: Event) -> bool:
+        return norm_line(ev.line) in ("RE28", "RE29") or ev.product == "nationalExpress"
+
+    conflicts = [ev for ev in deps + arrs
+                 if _ist_konfliktzug(ev) and (ev.when or ev.planned) and
+                 abs((ev.when or ev.planned) - planned) <= timedelta(minutes=30)]
+    delays = [ev.delay_min for ev in conflicts if ev.delay_min is not None]
+    ice = [ev for ev in conflicts if ev.product == "nationalExpress"]
+    row["conflict_max_delay"] = max(delays) if delays else np.nan
+    row["conflict_mean_delay"] = float(np.mean(delays)) if delays else np.nan
+    row["n_conflict_trips"] = len({ev.trip_id for ev in conflicts})
+    row["ice_max_delay"] = max((ev.delay_min for ev in ice if ev.delay_min is not None), default=np.nan)
+    row["n_ice_nearby"] = len({ev.trip_id for ev in ice})
+    passages = [ev.when for ev in conflicts if ev.when]
+    ice_passages = [ev.when for ev in ice if ev.when]
+    row["conflict_gap_min"] = min((abs((value - planned).total_seconds()) / 60 for value in passages), default=np.nan)
+    row["ice_gap_min"] = min((abs((value - planned).total_seconds()) / 60 for value in ice_passages), default=np.nan)
+    # Vorausfahrender Zug auf dem eingleisigen Abschnitt (staerkstes Feature des
+    # Modells). Gleiche Auswahl wie im Training: letzte RE19/RE28/RE29-Abfahrt in
+    # Doerfles-Esbach vor meiner, maximal VOR_WINDOW_MIN Minuten zurueck.
+    # Die eigene Abfahrtstafel beginnt erst 10 min vor meiner Abfahrt, deshalb wird
+    # das frueher liegende Fenster hier zusaetzlich geholt.
+    try:
+        mine_id = cfg["stations"].get("mine_id") or client.station_id(cfg["stations"]["mine"])
+        board = list(my_board or [])
+        board += client.board(mine_id, "departures",
+                              planned - timedelta(minutes=VOR_WINDOW_MIN), VOR_WINDOW_MIN)
+    except Exception:
+        board = list(my_board or [])
+    vor = [ev for ev in board
+           if norm_line(ev.line) in ("RE19", "RE28", "RE29") and ev.planned is not None
+           and not same_trip(ev, me_ev)
+           and planned - timedelta(minutes=VOR_WINDOW_MIN) <= ev.planned < planned]
+    if vor:
+        letzter = max(vor, key=lambda ev: ev.planned)
+        if letzter.delay_min is not None:
+            row["vorgaenger_delay"] = letzter.delay_min
+        row["vorgaenger_luecke_min"] = (planned - letzter.planned).total_seconds() / 60
+
+    local = planned.astimezone(now.tzinfo)
+    row.update(hour=local.hour, minute_of_day=local.hour * 60 + local.minute, dow=local.weekday(),
+               month=local.month, is_weekend=int(local.weekday() >= 5))
+    prediction = float(model.predict(pd.DataFrame([row])[ML_FEATURES])[0])
+    return planned + timedelta(minutes=max(0.0, prediction)), prediction
+
+
 def find_my_train(events: list[Event], mt: dict, tz: ZoneInfo) -> Event | None:
     want_line = norm_line(mt["line"])
     hh, mm = map(int, mt["planned_departure"].split(":"))
@@ -363,12 +464,42 @@ def run_check(cfg: dict, now: datetime, client: DbClient | None = None) -> tuple
         me_train(True), build_others(deps, arrs, cfg, c, True, tz),
         c, mt["point"], me_ev.planned, db_when,
     )
+    est.ml_estimate, _ = ml_prediction(client, cfg, me_ev, deps, arrs, me_ev.planned, now,
+                                   my_board=my_board)
     return format_message(head, est, me_ev, tz, int(mt.get("walk_min", 5))), {"est": est, "me": me_ev}
 
 
 def expected_departure(est: Estimate) -> tuple[datetime, int]:
-    """Erwartete Abfahrt am Einstieg (eigene Prognose, sonst DB) und Verspätung in ganzen Minuten."""
-    dep = est.estimate if minutes(est.extra_vs_db) > 0 else est.db_when
+    """Erwartete Abfahrt am Einstieg und Verspätung in ganzen Minuten.
+
+    Das ML-Modell wird DIREKT verwendet, nicht über max() mit der DB verrechnet.
+    Gemessen an 127 eigenen Fahrten und 1616 Fällen aus 2025 ist das die beste
+    Variante (MAE 1,78 gegenüber 1,80 für max(DB,ML) und 1,92 für die DB allein):
+      - Das Modell sagt nur in 6 von 132 Fällen weniger als die DB voraus, liegt
+        dort aber RICHTIGER (1,61 vs. 2,00 min). Die max()-Schranke verwarf also
+        korrekte Abwärtskorrekturen.
+      - Geprüfte Alternativen, die alle SCHLECHTER waren: ML nur bei erkanntem
+        Konflikt (2,18-2,27), Mischungen mit der DB, pauschaler Sockelabzug.
+        Sie gewinnen allenfalls auf der kleinen 2026er-Stichprobe und verlieren
+        auf dem zehnmal größeren 2025er-Testsatz.
+
+    Fällt das Modell aus oder liefert es einen unplausiblen Wert, greift die
+    bisherige Regel-/DB-Logik als Rückfallebene.
+    """
+    dep = max(est.db_when, est.estimate)
+    if est.ml_estimate is not None:
+        vorsprung = (est.ml_estimate - est.planned).total_seconds() / 60
+        if -5 <= vorsprung <= 180:        # Plausibilitätsgrenze gegen Ausreißer
+            dep = est.ml_estimate
+
+    # Ausnahme: Hat das REGELMODELL eine konkrete Blockade auf dem eingleisigen
+    # Abschnitt berechnet, darf das ML-Modell nicht darunter gehen. Es kennt die
+    # Gleisbelegung nicht und würde einen strukturellen Konflikt verschlucken -
+    # genau den Fall, für den das Projekt gebaut wurde. Greift selten (rund 3 %
+    # der Tage) und nur nach oben, der ML-Vorteil im Normalfall bleibt erhalten.
+    if est.extra_vs_db > timedelta(0):
+        dep = max(dep, est.estimate)
+
     delay = max(0, minutes(dep - est.planned))
     return est.planned + timedelta(minutes=delay), delay
 
@@ -378,14 +509,16 @@ def format_message(head: str, est: Estimate, me_ev: Event, tz: ZoneInfo, walk_mi
     dep, delay = expected_departure(est)
     leave = dep - timedelta(minutes=walk_min)
 
+    db_delay = max(0, minutes(est.db_when - est.planned))
     lines = [head, ""]
     if delay <= 0:
         lines.append("✅ <b>Pünktlich</b>")
     else:
         lines.append(f"⚠️ <b>Ca. +{delay} min – Abfahrt ~{hhmm(dep, tz)}</b>")
-        db_delay = max(0, minutes(est.db_when - est.planned))
-        if extra > 0:
-            lines.append(f"DB Navigator zeigt: {hhmm(est.db_when, tz)}" + (f" (+{db_delay})" if db_delay else ""))
+    # Weicht die eigene Schätzung von der DB ab, beide zeigen. Der Punktwert ist
+    # auf etwa +/-2 min genau (MAE 1,78), eine Einzelminute ist nicht belastbar.
+    if abs(delay - db_delay) >= 2:
+        lines.append(f"<i>DB Navigator sagt +{db_delay} min ({hhmm(est.db_when, tz)}) – hier weichen wir ab.</i>")
     lines += ["", f"🚶 <b>Loslaufen um {hhmm(leave, tz)}</b>", f"({walk_min} min zum Bahnhof)"]
 
     if extra > 0:
@@ -396,6 +529,9 @@ def format_message(head: str, est: Estimate, me_ev: Event, tz: ZoneInfo, walk_mi
                 lines.append(f"• {html.escape(cf.other.label)} {why}")
             lines.append(f"• Wartet ~{minutes(h.wait)} min in {html.escape(h.at)}")
         lines += ["", "<i>Schätzung – lieber nicht zu knapp.</i>"]
+    if est.ml_estimate is not None:
+        ml_delay = max(0, minutes(est.ml_estimate - est.planned))
+        lines.append(f"<i>Modell +{ml_delay} · DB +{db_delay} · typ. Abweichung ±2 min</i>")
 
     if est.baseline_error >= timedelta(minutes=1):
         lines += ["", f"🔧 Modell sieht schon im Fahrplan +{minutes(est.baseline_error)} min – config prüfen."]

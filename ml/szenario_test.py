@@ -31,7 +31,8 @@ FEATURES = [
     "up_sonneberg", "up_neustadt", "up_moenchroeden", "up_roedentalmitte", "up_roedental",
     "n_upstream_known", "last_known_delay", "max_upstream_delay", "upstream_trend",
     "conflict_max_delay", "conflict_mean_delay", "n_conflict_trips",
-    "ice_max_delay", "n_ice_nearby",
+    "ice_max_delay", "n_ice_nearby", "conflict_gap_min", "ice_gap_min",
+    "vorgaenger_delay", "vorgaenger_luecke_min",
     "hour", "minute_of_day", "dow", "month", "is_weekend",
 ]
 
@@ -75,7 +76,7 @@ def regelbasiert(c, ice_delay, re29_delay):
     return wartezeit, ab, gruende
 
 
-def gelernt(model, ice_delay, re29_delay):
+def gelernt(model, ice_delay, re29_delay, vorgaenger=0.0):
     """Was sagt das ML-Modell bei gleicher Lage?"""
     row = {
         "db_delay_now": 0.0,            # DB zeigt den RE 19 noch puenktlich
@@ -87,6 +88,12 @@ def gelernt(model, ice_delay, re29_delay):
         "conflict_mean_delay": float((ice_delay + re29_delay) / 2),
         "n_conflict_trips": 2,
         "ice_max_delay": float(ice_delay), "n_ice_nearby": 1,
+        # Abstand der Ist-Durchfahrt des Konfliktzugs zu meiner Soll-Abfahrt:
+        # ICE faehrt planmaessig 07:12 in Coburg ab, meine Abfahrt ist 07:20.
+        "conflict_gap_min": abs(-8 + ice_delay), "ice_gap_min": abs(-8 + ice_delay),
+        # Vorausfahrender/kreuzender Zug: der RE19 der Gegenrichtung, planmaessig
+        # 41 min vor meiner Abfahrt in Doerfles.
+        "vorgaenger_delay": float(vorgaenger), "vorgaenger_luecke_min": 41.0,
         "hour": 7, "minute_of_day": 7 * 60 + 20, "dow": 0, "month": 10, "is_weekend": 0,
     }
     return float(model.predict(pd.DataFrame([row])[FEATURES])[0])
@@ -99,14 +106,14 @@ def main():
     print("Szenario: RE 19 planmaessig ab Doerfles-Esbach 07:20 Uhr, selbst puenktlich.")
     print("          ICE nach Berlin (Coburg ab 07:12) wird zunehmend verspaetet.")
     print("          RE 29 nach Erfurt (Coburg ab 07:27) faehrt mit +3 min.\n")
-    print(f"{'ICE +min':>9} | {'Regelmodell':>28} | {'ML-Modell':>12}")
-    print(f"{'':>9} | {'Wartezeit  ->  Abfahrt':>28} | {'Prognose':>12}")
-    print("-" * 56)
+    print(f"{'ICE +min':>9} | {'Regelmodell':>28} | {'ML Vorg. 0':>12} | {'ML Vorg.+10':>12}")
+    print(f"{'':>9} | {'Wartezeit  ->  Abfahrt':>28} | {'Prognose':>12} | {'Prognose':>12}")
+    print("-" * 72)
     for ice_delay in [0, 3, 5, 8, 10, 12, 15, 20, 30]:
         wart, ab, gruende = regelbasiert(c, ice_delay, 3)
-        ml = gelernt(model, ice_delay, 3)
         rule = f"{wart:5.1f} min  ->  {ab.astimezone(TZ):%H:%M}"
-        print(f"{ice_delay:>9} | {rule:>28} | {ml:+10.1f} min")
+        print(f"{ice_delay:>9} | {rule:>28} | {gelernt(model, ice_delay, 3, 0):+10.1f} min"
+              f" | {gelernt(model, ice_delay, 3, 10):+10.1f} min")
 
     print("\n--- Detail: ICE +15 min, wer blockiert wen? ---")
     wart, ab, gruende = regelbasiert(c, 15, 3)

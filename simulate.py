@@ -217,6 +217,7 @@ class Estimate:
     estimate: datetime
     extra_vs_db: timedelta
     holds: list[Hold]
+    ml_estimate: datetime | None = None
 
 
 def estimate(

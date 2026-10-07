@@ -28,25 +28,33 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "rule_based"))
 from simulate_fixed import FAST, REGIONAL, Corridor, make_train, resolve  # noqa: E402
 
-# Empirische Kalibrierung: realer RE19-Verspaetungsmedian in Doerfles, aufgeschluesselt
-# nach der tatsaechlichen Verspaetung des ICE im Konfliktfenster.
-# Basis: 553 Faelle aus 2025 mit verifiziertem Ist-Wert. Nachrechnen: siehe README.
-KALIBRIERUNG = [      # (ICE-Verspaetung bis, erwartete RE19-Verspaetung in min, n)
-    (3,   1.0,  304),
-    (5,   3.0,   81),
-    (8,   4.0,   31),
-    (12,  7.0,   37),
-    (20,  1.0,   36),
-    (999, 3.0,   64),
+# Empirische Kalibrierung aus 553 realen Faellen 2025 (verifizierte Ist-Werte):
+# reale RE19-Verspaetung in Doerfles, aufgeschluesselt nach der tatsaechlichen
+# Verspaetung des ICE im Konfliktfenster.
+#
+# WICHTIG - warum hier eine SPANNE und kein Einzelwert steht:
+# Die Streuung innerhalb jeder Gruppe ist groesser als der Unterschied zwischen
+# den Gruppen. Im kritischen Fenster (ICE +8..12) reicht die Realitaet von 0 bis
+# 43 Minuten bei einem Median von 7. Eine Punktvorhersage waere Scheinpraezision:
+# out-of-sample geprueft schlaegt die Tabelle eine konstante Vorhersage nur um
+# 6 % (MAE 3,00 vs 3,20 min). Verlaesslich ist die ERKENNUNG des Risikofensters,
+# nicht die Bezifferung.
+KALIBRIERUNG = [   # (ICE-Verspaetung bis, p25, median, p75, p90, n)
+    (3,   1.0, 1.0, 2.0,  5.0, 304),
+    (5,   2.0, 3.0, 5.0,  7.0,  81),
+    (8,   2.0, 4.0, 6.0,  7.0,  31),
+    (12,  5.0, 7.0, 9.0, 12.0,  37),
+    (20,  1.0, 1.0, 8.0, 10.0,  36),
+    (999, 1.0, 3.0, 6.0,  8.0,  64),
 ]
 
 
 def erwarteter_zuschlag(ice_delay_min):
-    """Empirisch beobachtete RE19-Verspaetung bei dieser ICE-Verspaetung."""
-    for grenze, minuten, n in KALIBRIERUNG:
+    """Empirisch beobachtete RE19-Verspaetung: (p25, median, p75, p90, n)."""
+    for grenze, p25, med, p75, p90, n in KALIBRIERUNG:
         if ice_delay_min <= grenze:
-            return minuten, n
-    return 0.0, 0
+            return p25, med, p75, p90, n
+    return 0.0, 0.0, 0.0, 0.0, 0
 
 
 def build_corridor():
@@ -80,14 +88,23 @@ def regelcheck(corridor, sched_dep, konfliktzuege):
 
 
 def kombiniere(ml_prognose, eigene_verspaetung, konflikt_erkannt, ice_delay):
-    """Fuehrt beide Modelle zusammen."""
+    """Fuehrt beide Modelle zusammen.
+
+    Rueckgabe: (erwartet, untergrenze, obergrenze, risiko, begruendung)
+    Die Grenzen sind p25/p90 aus den historischen Faellen - also keine
+    Konfidenzintervalle im statistischen Sinn, sondern beobachtete Spannweiten.
+    """
+    eigen = eigene_verspaetung or 0.0
     if not konflikt_erkannt:
-        return ml_prognose, "nur ML (kein Konflikt erkannt)", None
-    zuschlag, n = erwarteter_zuschlag(ice_delay)
-    regel_basiert = (eigene_verspaetung or 0.0) + zuschlag
-    if regel_basiert > ml_prognose:
-        return regel_basiert, f"Regelmodell (Konflikt, +{zuschlag:.0f} min aus n={n} Faellen)", zuschlag
-    return ml_prognose, f"ML (hoeher als Konfliktzuschlag +{zuschlag:.0f})", zuschlag
+        return ml_prognose, ml_prognose, ml_prognose, "normal", "nur ML (kein Konflikt erkannt)"
+
+    p25, med, p75, p90, n = erwarteter_zuschlag(ice_delay)
+    erwartet = max(ml_prognose, eigen + med)
+    unten = max(ml_prognose * 0.6, eigen + p25)
+    oben = max(ml_prognose, eigen + p90)
+    risiko = "ERHOEHT" if med >= 5 else "leicht erhoeht"
+    quelle = "Regelmodell+Empirie" if eigen + med > ml_prognose else "ML"
+    return erwartet, unten, oben, risiko, f"{quelle}, Konflikt erkannt (n={n} Vergleichsfaelle)"
 
 
 def demo():
@@ -103,6 +120,7 @@ def demo():
         "up_roedentalmitte", "up_roedental", "n_upstream_known", "last_known_delay",
         "max_upstream_delay", "upstream_trend", "conflict_max_delay", "conflict_mean_delay",
         "n_conflict_trips", "ice_max_delay", "n_ice_nearby", "conflict_gap_min", "ice_gap_min",
+        "vorgaenger_delay", "vorgaenger_luecke_min",
         "hour", "minute_of_day", "dow", "month", "is_weekend",
     ]
     sched = TAG.replace(hour=7, minute=20)
@@ -110,15 +128,18 @@ def demo():
     print("Szenario: RE 19 ab Doerfles-Esbach 07:20, selbst puenktlich.")
     print("          ICE nach Berlin (Coburg ab 07:12 planmaessig) zunehmend verspaetet,")
     print("          RE 29 nach Erfurt (Coburg ab 07:27) mit +3 min.\n")
-    print(f"{'ICE':>5} | {'Regel':>18} | {'ML':>7} | {'KOMBINIERT':>10} | {'real 2025':>9} | Entscheidung")
-    print("-" * 94)
+    print(f"{'ICE':>5} | {'Konflikt?':>10} | {'ML':>6} | {'KOMBINIERT (Spanne)':>22} | {'Risiko':>14} | real 2025")
+    print("-" * 92)
     for ice in [0, 3, 5, 8, 10, 12, 15, 20, 30]:
         zuege = [(f"ICE +{ice}", 4, FAST, TAG.replace(hour=7, minute=12) + timedelta(minutes=ice)),
                  ("RE29 +3", 3, REGIONAL, TAG.replace(hour=7, minute=27) + timedelta(minutes=3))]
         konflikt, roh, verurs = regelcheck(c, sched, zuege)
 
         row = {f: 0.0 for f in FEATURES}
-        row.update(n_upstream_known=5, n_conflict_trips=2, n_ice_nearby=1,
+        # vorgaenger_luecke_min=0 waere unrealistisch (der Vorgaenger faehrt
+        # planmaessig 41 min vor mir); vorgaenger_delay bleibt 0 = puenktlich.
+        row.update(vorgaenger_luecke_min=41.0,
+                   n_upstream_known=5, n_conflict_trips=2, n_ice_nearby=1,
                    hour=7, minute_of_day=440, dow=0, month=10, is_weekend=0,
                    conflict_max_delay=float(max(ice, 3)), conflict_mean_delay=float((ice + 3) / 2),
                    ice_max_delay=float(ice),
@@ -127,13 +148,16 @@ def demo():
                    conflict_gap_min=abs((TAG.replace(hour=7, minute=12) + timedelta(minutes=ice) - sched)
                                         .total_seconds() / 60))
         ml = float(model.predict(pd.DataFrame([row])[FEATURES])[0])
-        komb, grund, _ = kombiniere(ml, 0.0, konflikt, ice)
-        real = erwarteter_zuschlag(ice)[0]
-        regel_txt = f"{'JA' if konflikt else 'nein':>4} ({roh:4.1f} min)"
-        print(f"{ice:>5} | {regel_txt:>18} | {ml:+6.1f} | {komb:+9.1f} | {real:>8.0f} | {grund}")
+        erw, unten, oben, risiko, grund = kombiniere(ml, 0.0, konflikt, ice)
+        real = erwarteter_zuschlag(ice)[1]
+        spanne = f"{erw:+.1f}  ({unten:+.0f} bis {oben:+.0f})"
+        print(f"{ice:>5} | {'JA' if konflikt else 'nein':>10} | {ml:+5.1f} | {spanne:>22} | "
+              f"{risiko:>14} | {real:+.0f} min")
 
     print("\n'real 2025' = Median der tatsaechlichen RE19-Verspaetung in genau dieser Lage,")
-    print("aus 553 beobachteten Faellen. Das ist die Messlatte, nicht eine Modellausgabe.")
+    print("aus 553 beobachteten Faellen (verifizierte Ist-Werte).")
+    print("Die Spanne ist p25-p90 derselben Faelle - KEIN statistisches Konfidenzintervall,")
+    print("sondern die beobachtete Streuung. Im Fenster ICE +8..12 lagen real 0 bis 43 min.")
 
 
 if __name__ == "__main__":

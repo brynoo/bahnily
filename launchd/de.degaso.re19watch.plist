@@ -4,17 +4,17 @@
 <dict>
   <key>Label</key><string>de.degaso.re19watch</string>
   <key>ProgramArguments</key>
-  <array><string>/Users/benjamineckl/Documents/Skripte/bahn/run.sh</string></array>
-  <!-- Mo–Fr 07:00 (Wochentage 1–5); Wochenende filtert re19watch.py zusätzlich -->
+  <array><string>__INSTALL_DIR__/run.sh</string></array>
+  <!-- Mo–Fr 07:05 (Wochentage 1–5); Wochenende filtert re19watch.py zusätzlich -->
   <key>StartCalendarInterval</key>
   <array>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>5</integer></dict>
   </array>
-  <key>StandardOutPath</key><string>/Users/benjamineckl/Documents/Skripte/bahn/re19watch.log</string>
-  <key>StandardErrorPath</key><string>/Users/benjamineckl/Documents/Skripte/bahn/re19watch.log</string>
+  <key>StandardOutPath</key><string>__INSTALL_DIR__/re19watch.log</string>
+  <key>StandardErrorPath</key><string>__INSTALL_DIR__/re19watch.log</string>
 </dict>
 </plist>

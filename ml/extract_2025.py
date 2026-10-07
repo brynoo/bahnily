@@ -6,6 +6,7 @@ Das Original-Tar wird nur lesend geoeffnet (tarfile, Modus 'r'), nichts wird dor
 veraendert oder geloescht.
 """
 import io
+import os
 import tarfile
 import pandas as pd
 
@@ -14,7 +15,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 DATA = HERE / "data"
 
 
-TAR_PATH = "/Users/benjamineckl/Downloads/2025.tar"
+TAR_PATH = os.environ.get("TAR_PATH", str(pathlib.Path.home() / "Downloads" / "2025.tar"))
 OUT_PATH = str(DATA / "werrabahn_marschbahn_2025.parquet")
 
 WERRABAHN = [8013008, 8004325, 8004064, 8005122, 8004633, 8001484, 8001334, 8001338]

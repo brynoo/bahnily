@@ -31,6 +31,7 @@ UPSTREAM = ["8013008", "8004325", "8004064", "8005122", "8004633"]
 UP_NAME = {"8013008": "sonneberg", "8004325": "neustadt", "8004064": "moenchroeden",
            "8005122": "roedentalmitte", "8004633": "roedental"}
 CONFLICT_WINDOW = 30
+VOR_WINDOW = 45        # Suchfenster fuer den vorausfahrenden Zug (wie im Training)
 LEAD_MIN = 15
 
 FEATURES = [
@@ -39,6 +40,7 @@ FEATURES = [
     "n_upstream_known", "last_known_delay", "max_upstream_delay", "upstream_trend",
     "conflict_max_delay", "conflict_mean_delay", "n_conflict_trips",
     "ice_max_delay", "n_ice_nearby", "conflict_gap_min", "ice_gap_min",
+    "vorgaenger_delay", "vorgaenger_luecke_min",
     "hour", "minute_of_day", "dow", "month", "is_weekend",
 ]
 
@@ -63,7 +65,8 @@ def build_day(day):
     plan_by, meta = {}, {}
     for p in plan:
         plan_by[(p["trip_id"], p["eva"], p["kind"])] = parse(p.get("planned"))
-        meta[p["trip_id"]] = {"line": p.get("line"), "number": p.get("number")}
+        meta[p["trip_id"]] = {"line": p.get("line"), "number": p.get("number"),
+                       "category": p.get("category")}
 
     chg = sorted((c for c in changes if c.get("changed")), key=lambda c: c["snapshot"])
 
@@ -92,10 +95,9 @@ def build_day(day):
         y = (ist_entry[0] - sched_dep).total_seconds() / 60.0
         T = sched_dep - timedelta(minutes=LEAD_MIN)
 
-        # Datenleckage ausschliessen (gleiche Logik wie in build_features.py):
-        # Wenn der letzte Echtzeitstand schon vor T vorlag, IST die DB-Prognose
-        # die Zielgroesse - solche Faelle verfaelschen den Vergleich.
-        if ist_entry[2] <= T:
+        # Nur Ziele verwenden, die nach T und nach der prognostizierten Zeit
+        # noch einmal als Echtzeitstand bestaetigt wurden.
+        if ist_entry[2] <= T or ist_entry[2] < ist_entry[0] + timedelta(minutes=1):
             continue
         kn = known_at(T)
 
@@ -121,18 +123,44 @@ def build_day(day):
 
         lo, hi = sched_dep - timedelta(minutes=CONFLICT_WINDOW), sched_dep + timedelta(minutes=CONFLICT_WINDOW)
         cd, ntr = {}, set()
+        passages, ice_delays, ice_passages = [], [], []
         for (t2, e2, k2), pl2 in plan_by.items():
             if t2 == trip or not pl2 or not (lo <= pl2 <= hi):
                 continue
-            if meta.get(t2, {}).get("line") not in ("RE28", "RE29"):
+            info = meta.get(t2, {})
+            if info.get("line") not in ("RE28", "RE29") and info.get("category") != "ICE":
                 continue
             ntr.add(t2)
             d = delay(t2, e2, k2)
             if not np.isnan(d):
                 cd[t2] = d
+                passage = pl2 + timedelta(minutes=d)
+                passages.append(passage)
+                if info.get("category") == "ICE":
+                    ice_delays.append(d)
+                    ice_passages.append(passage)
         r["conflict_max_delay"] = max(cd.values()) if cd else np.nan
         r["conflict_mean_delay"] = float(np.mean(list(cd.values()))) if cd else np.nan
         r["n_conflict_trips"] = len(ntr)
+        r["ice_max_delay"] = max(ice_delays) if ice_delays else np.nan
+        r["n_ice_nearby"] = len({t2 for t2 in ntr if meta.get(t2, {}).get("category") == "ICE"})
+        r["conflict_gap_min"] = min(abs((p - sched_dep).total_seconds() / 60)
+                                     for p in passages) if passages else np.nan
+        r["ice_gap_min"] = min(abs((p - sched_dep).total_seconds() / 60)
+                                for p in ice_passages) if ice_passages else np.nan
+
+        # Vorausfahrender/kreuzender Zug - identisch zu ml/build_features.py
+        vor = [(pl2, t2) for (t2, e2, k2), pl2 in plan_by.items()
+               if e2 == DOERFLES and k2 == "departure" and t2 != trip and pl2
+               and meta.get(t2, {}).get("line") in ("RE19", "RE28", "RE29")
+               and sched_dep - timedelta(minutes=VOR_WINDOW) <= pl2 < sched_dep]
+        if vor:
+            pl_vor, t_vor = max(vor)
+            r["vorgaenger_delay"] = delay(t_vor, DOERFLES, "departure")
+            r["vorgaenger_luecke_min"] = (sched_dep - pl_vor).total_seconds() / 60
+        else:
+            r["vorgaenger_delay"] = np.nan
+            r["vorgaenger_luecke_min"] = np.nan
 
         loc = sched_dep.astimezone(TZ)
         r.update(hour=loc.hour, minute_of_day=loc.hour * 60 + loc.minute,

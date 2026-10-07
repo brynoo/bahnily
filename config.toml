@@ -17,7 +17,12 @@ mine_id = "8001484"
 coburg_id = "8001338"
 
 [schedule]
-window_start = "06:45"   # nur in diesem Fenster (Ortszeit) wird gecheckt
+# Ein Morgencheck, ausgeloest um 07:05 (passend zum 15-min-Vorlauf des ML-Modells).
+# Das Fenster muss eine SPANNE sein, kein Zeitpunkt: in_window() vergleicht
+# sekundengenau, und launchd/GitHub Actions starten mit Verzoegerung. Bei
+# window_start == window_end feuert der Alarm nur in der ersten Sekunde und
+# faellt faktisch komplett aus.
+window_start = "07:00"
 window_end = "07:19"
 weekdays_only = true
 
