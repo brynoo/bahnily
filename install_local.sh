@@ -9,6 +9,11 @@ mkdir -p "$DST"
 cp "$SRC"/{re19watch.py,simulate.py,collect.py,config.toml,requirements.txt,run.sh} "$DST"/
 mkdir -p "$DST/ml"
 cp "$SRC/ml/model_werrabahn.joblib" "$DST/ml/"
+if [ ! -f "$SRC/.env" ]; then
+  echo "Es fehlt $SRC/.env – bitte .env.example kopieren und ausfüllen:" >&2
+  echo "  cp .env.example .env && \$EDITOR .env" >&2
+  exit 1
+fi
 install -m 600 "$SRC/.env" "$DST/.env"
 [ -d "$DST/.venv" ] || python3 -m venv "$DST/.venv"
 "$DST/.venv/bin/pip" install -q -r "$DST/requirements.txt"
