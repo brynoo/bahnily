@@ -281,3 +281,71 @@ wird aus dem Training entfernt. Die Zahlen dort sind bewusst **keine** Leistungs
 es ist eine verzerrte Extremstichprobe, in der das Modell die Mehrzahl der Einzelfälle
 gewinnt, im Mittelwert aber verliert, weil es schon sichtbare große DB-Werte zur Mitte
 dämpft. Belastbare Zahlen stehen im [Haupt-README](../README.md).
+
+## Replay des Regelmodells über 2025 (`replay_2025.py`)
+
+Das physikalische Regelmodell war bis Oktober 2026 **nie gegen die Realität geprüft** –
+im Livebetrieb hatte es in 271 Läufen nie angeschlagen, weil in dem Zeitraum kein ICE ins
+Konfliktfenster fiel. `replay_2025.py` baut den Produktionspfad aus `run_check()` aus den
+historischen Daten nach (Gegenzüge aus der Coburg-Tafel, ein Anker, zweimal simuliert,
+nur Wissensstand zum Abfragezeitpunkt) und wertet ihn auf 4291 Zielzügen aus.
+
+**Ergebnis: das Regelmodell darf die Zahl nicht bestimmen.**
+
+| | Wert |
+|---|---|
+| Züge mit erkannter Blockade | 587 von 4291 (13,7 %) |
+| davon Fehlalarme (Ist < 5 min) | **73 %** |
+| Ist-Median bei erkannter Blockade | 2,0 min — genauso wie ohne Blockade |
+| Anteil ≥5 min bei Blockade / ohne | 27,0 % / 17,2 % (Grundrate 18,6 %) |
+
+Mit Veto wurde der 07:20-Slot auf 4,19 min MAE verschlechtert (ohne: 2,47; DB: 3,03).
+Auch auf die präzise Teilmenge begrenzt (`rule_extra_min ≥ 8`, dort 63 % Treffer) bleibt
+es schädlich: 15,30 statt 5,37 min. Und `rule_extra_min` als zusätzliches ML-Feature
+bringt nichts – Rang 25 von 25, Permutation Importance −0,003.
+
+Das Regelmodell bleibt im Einsatz, aber nur für die **Begründung** (welcher Zug kreuzt wo)
+und als Rückfallebene. Seine berechnete Wartezeit wird in der Nachricht nicht mehr als
+Minutenzahl gezeigt, weil »wartet 15 min« neben einer Prognose von »+2 min« sich
+widerspricht und grundlos Alarm schlägt.
+
+### Der Fehler, den das Replay aufgedeckt hat
+
+Die Coburg-Tafel wurde nach **Soll**-Zeit gefiltert (`window_before_min = 35`, Tafel ab
+06:45). Alle drei 07:20-Konfliktfälle des Jahres 2025 waren derselbe Zug – **ICE 1604 mit
+Soll-Abfahrt 06:43** und +34 bis +40 min, also real 07:19 bis 07:23, mitten im Weg. Seine
+Soll-Zeit lag zwei Minuten vor dem Fensterbeginn, er war für das System unsichtbar.
+
+Behoben an zwei Stellen:
+- `config.toml`: `window_before_min = 90`, `window_after_min = 30`, und `re19watch.py`
+  holt die Tafel entsprechend länger
+- `build_features.py`: Konfliktzüge werden jetzt nach **voraussichtlicher Durchfahrt**
+  ausgewählt (Kandidaten −90/+30 min, Auswahl ±30 min um die Soll-Abfahrt), nicht mehr
+  nach Soll-Zeit. Sonst sähe das Modell im Betrieb andere Züge als beim Lernen.
+
+Wirkung auf die drei 07:20-Fälle – vorher sah das Modell dort `ice_max_delay = 0 / 5 / −1`,
+also »der ICE ist pünktlich«:
+
+| Tag | ice_gap vorher | nachher | ice_max vorher | nachher | Ist | ML vorher | ML nachher |
+|---|---|---|---|---|---|---|---|
+| 2025-01-30 | 15 | **3** | 0 | **+34** | +11 | +3,0 | **+4,1** |
+| 2025-11-27 | 10 | 10 | +5 | **+25** | +8 | +4,0 | **+4,6** |
+| 2025-01-15 | 18 | **6** | −1 | **+33** | +6 | +1,8 | **+3,7** |
+
+Mittlerer Fehler auf allen 13 bekannten ICE-Begegnungen: 5,29 → **4,66** min (DB 6,15);
+nur auf den drei 07:20-Fällen 5,39 → **4,20** (DB 7,33). Aggregiert ändert sich wenig
+(3 von 6465 Fällen), für den Anwendungsfall ist es der Unterschied.
+
+## Spanne statt Punktwert bei riskanter Lage
+
+Gemessene Streuung nach oben (p90 des Residuums, n=6465):
+
+| Lage | n | p90 | Anteil Ist ≥5 min |
+|---|---|---|---|
+| alle | 6465 | +2,9 | 18,7 % |
+| ICE nah (≤15 min) und ≥10 min spät | 334 | +4,1 | 24,9 % |
+| vorausfahrender Zug ≥8 min spät | 357 | **+7,5** | **65,3 %** |
+
+Daraus die Obergrenze in der Nachricht (»Kann bis +X min werden«). Der Punktwert bleibt
+die Prognose – so wird nicht grundlos Alarm geschlagen, die Unsicherheit aber benannt.
+Gezeigt wird die Spanne nur, wenn die Lage riskanter als normal ist.

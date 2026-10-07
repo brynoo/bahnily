@@ -218,6 +218,9 @@ class Estimate:
     extra_vs_db: timedelta
     holds: list[Hold]
     ml_estimate: datetime | None = None
+    # Gemessene Streuung nach oben fuer die aktuelle Lage (siehe RISIKO in re19watch.py)
+    risiko_zuschlag: float = 0.0
+    risiko_grund: str = ""
 
 
 def estimate(

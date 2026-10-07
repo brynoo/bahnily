@@ -7,3 +7,4 @@ data/
 datamarschbahn/
 cloud-data/
 .DS_Store
+last_alarm.json

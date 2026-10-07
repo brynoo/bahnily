@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import html
+import json
 import math
 import os
 import sys
@@ -119,6 +120,18 @@ ML_FEATURES = [
     "hour", "minute_of_day", "dow", "month", "is_weekend",
 ]
 VOR_WINDOW_MIN = 45   # muss zu VOR_WINDOW in ml/build_features.py passen
+
+# Wie weit die echte Verspaetung typischerweise UEBER der Prognose liegt (p90 des
+# Residuums), gemessen ueber fuenf gleitende Zweimonatsfenster 2025 (n=6465):
+#   Lage                            n     p90    Anteil Ist >= 5 min
+#   alle                         6465   +2,9                  18,7 %
+#   ICE nah (<=15 min) und >=10   334   +4,1                  24,9 %
+#   vorausfahrender Zug >= 8 min  357   +7,5                  65,3 %
+# Daraus die Obergrenze der angezeigten Spanne. Der Punktwert bleibt die Prognose -
+# so wird nicht grundlos Alarm geschlagen, die Unsicherheit aber benannt.
+RISIKO_BASIS = 3.0
+RISIKO_ICE = 4.0
+RISIKO_VORGAENGER = 8.0
 UPSTREAM = [("8013008", "sonneberg"), ("8004325", "neustadt"), ("8004064", "moenchroeden"),
             ("8005122", "roedentalmitte"), ("8004633", "roedental")]
 
@@ -344,7 +357,7 @@ def ml_prediction(client: DbClient, cfg: dict, me_ev: Event, deps: list[Event], 
 
         model = joblib.load(HERE / "ml" / "model_werrabahn.joblib")
     except (ImportError, OSError, ValueError):
-        return None, None
+        return None, None, {"zuschlag": RISIKO_BASIS, "grund": ""}
 
     row = {feature: np.nan for feature in ML_FEATURES}
     row["db_delay_now"] = me_ev.delay_min if me_ev.delay_min is not None else np.nan
@@ -407,7 +420,16 @@ def ml_prediction(client: DbClient, cfg: dict, me_ev: Event, deps: list[Event], 
     row.update(hour=local.hour, minute_of_day=local.hour * 60 + local.minute, dow=local.weekday(),
                month=local.month, is_weekend=int(local.weekday() >= 5))
     prediction = float(model.predict(pd.DataFrame([row])[ML_FEATURES])[0])
-    return planned + timedelta(minutes=max(0.0, prediction)), prediction
+
+    # Lageabhaengige Obergrenze bestimmen (gemessene p90-Streuung, siehe oben).
+    zuschlag, grund = RISIKO_BASIS, ""
+    vd, ig, imd = row["vorgaenger_delay"], row["ice_gap_min"], row["ice_max_delay"]
+    if not np.isnan(ig) and not np.isnan(imd) and ig <= 15 and imd >= 10:
+        zuschlag, grund = RISIKO_ICE, "ein ICE fährt verspätet dicht vor dir über den Abschnitt"
+    if not np.isnan(vd) and vd >= 8:
+        zuschlag, grund = RISIKO_VORGAENGER, f"der Zug vor dir ist {vd:.0f} min zu spät"
+    return (planned + timedelta(minutes=max(0.0, prediction)), prediction,
+            {"zuschlag": zuschlag, "grund": grund})
 
 
 def find_my_train(events: list[Event], mt: dict, tz: ZoneInfo) -> Event | None:
@@ -447,9 +469,17 @@ def run_check(cfg: dict, now: datetime, client: DbClient | None = None) -> tuple
         return f"{head}\n❌ Laut DB fällt der Zug heute aus.", {}
 
     cob_id = st.get("coburg_id") or client.station_id(st["coburg"])
-    since = planned_dt - timedelta(minutes=int(api.get("window_before_min", 35)))
-    deps = [e for e in client.board(cob_id, "departures", since, 60) if not same_trip(e, me_ev)]
-    arrs = [e for e in client.board(cob_id, "arrivals", since, 60) if not same_trip(e, me_ev)]
+    # WICHTIG: Die Tafel wird nach SOLL-Zeit gefiltert, nicht nach tatsaechlicher
+    # Durchfahrt. Ein stark verspaeteter Zug, dessen Soll-Zeit vor dem Fensterbeginn
+    # liegt, war damit unsichtbar - obwohl er real genau in meinen Weg faehrt.
+    # Gemessen an allen drei 07:20-Konfliktfaellen 2025: es war jedes Mal ICE 1604
+    # mit Soll-Abfahrt 06:43 und +36..+40 min, also real 07:19-07:23. Bei den alten
+    # 35 min Vorlauf begann die Tafel um 06:45 und hat ihn nie erfasst.
+    vor = int(api.get("window_before_min", 90))
+    since = planned_dt - timedelta(minutes=vor)
+    dauer = vor + int(api.get("window_after_min", 30))
+    deps = [e for e in client.board(cob_id, "departures", since, dauer) if not same_trip(e, me_ev)]
+    arrs = [e for e in client.board(cob_id, "arrivals", since, dauer) if not same_trip(e, me_ev)]
 
     def me_train(use_prog: bool) -> Train:
         t = me_ev.when if (use_prog and me_ev.when) else me_ev.planned
@@ -464,8 +494,9 @@ def run_check(cfg: dict, now: datetime, client: DbClient | None = None) -> tuple
         me_train(True), build_others(deps, arrs, cfg, c, True, tz),
         c, mt["point"], me_ev.planned, db_when,
     )
-    est.ml_estimate, _ = ml_prediction(client, cfg, me_ev, deps, arrs, me_ev.planned, now,
-                                   my_board=my_board)
+    est.ml_estimate, _, risiko = ml_prediction(client, cfg, me_ev, deps, arrs, me_ev.planned,
+                                               now, my_board=my_board)
+    est.risiko_zuschlag, est.risiko_grund = risiko["zuschlag"], risiko["grund"]
     return format_message(head, est, me_ev, tz, int(mt.get("walk_min", 5))), {"est": est, "me": me_ev}
 
 
@@ -492,13 +523,18 @@ def expected_departure(est: Estimate) -> tuple[datetime, int]:
         if -5 <= vorsprung <= 180:        # Plausibilitätsgrenze gegen Ausreißer
             dep = est.ml_estimate
 
-    # Ausnahme: Hat das REGELMODELL eine konkrete Blockade auf dem eingleisigen
-    # Abschnitt berechnet, darf das ML-Modell nicht darunter gehen. Es kennt die
-    # Gleisbelegung nicht und würde einen strukturellen Konflikt verschlucken -
-    # genau den Fall, für den das Projekt gebaut wurde. Greift selten (rund 3 %
-    # der Tage) und nur nach oben, der ML-Vorteil im Normalfall bleibt erhalten.
-    if est.extra_vs_db > timedelta(0):
-        dep = max(dep, est.estimate)
+    # KEIN Veto des Regelmodells mehr. Begruendung aus dem Replay ueber das ganze
+    # Jahr 2025 (ml/replay_2025.py, 4291 Zielzuege):
+    #   - Das Regelmodell erkennt eine Blockade bei 13,7 % der Zuege, davon sind
+    #     73 % Fehlalarme (Zug faehrt tatsaechlich mit unter 5 min Verspaetung).
+    #   - Mit Veto wird der 07:20-Slot auf 4,19 min MAE verschlechtert, ohne Veto
+    #     sind es 2,47 - schlechter also sogar als die DB-Prognose (3,03).
+    #   - Auch auf die praezise Teilmenge begrenzt (rule_extra >= 8 min, dort 63 %
+    #     Treffer) bleibt es schaedlich: 15,30 statt 5,37 min MAE.
+    #   - rule_extra_min als zusaetzliches ML-Feature bringt ebenfalls nichts
+    #     (Rang 25 von 25, Permutation Importance -0,003).
+    # Das Regelmodell bleibt im Einsatz, aber nur noch fuer die Begruendung
+    # ("welcher Zug kreuzt wo") und als Rueckfallebene, wenn das ML-Modell fehlt.
 
     delay = max(0, minutes(dep - est.planned))
     return est.planned + timedelta(minutes=delay), delay
@@ -511,8 +547,19 @@ def format_message(head: str, est: Estimate, me_ev: Event, tz: ZoneInfo, walk_mi
 
     db_delay = max(0, minutes(est.db_when - est.planned))
     lines = [head, ""]
-    if delay <= 0:
+    # Obergrenze = Prognose + gemessene p90-Streuung der aktuellen Lage. Nur zeigen,
+    # wenn die Lage riskanter ist als normal (sonst steht in jeder Nachricht eine
+    # Spanne und sie verliert ihre Aussage).
+    oben = delay + int(round(est.risiko_zuschlag))
+    spanne = est.risiko_zuschlag > RISIKO_BASIS and oben > delay + 1
+    if delay <= 0 and not spanne:
         lines.append("✅ <b>Pünktlich</b>")
+    elif spanne:
+        lines.append(f"⚠️ <b>Ca. +{delay} min – Abfahrt ~{hhmm(dep, tz)}</b>")
+        lines.append(f"<b>Kann bis +{oben} min werden</b> "
+                     f"(~{hhmm(est.planned + timedelta(minutes=oben), tz)})")
+        if est.risiko_grund:
+            lines.append(f"<i>{html.escape(est.risiko_grund)}.</i>")
     else:
         lines.append(f"⚠️ <b>Ca. +{delay} min – Abfahrt ~{hhmm(dep, tz)}</b>")
     # Weicht die eigene Schätzung von der DB ab, beide zeigen. Der Punktwert ist
@@ -522,13 +569,24 @@ def format_message(head: str, est: Estimate, me_ev: Event, tz: ZoneInfo, walk_mi
     lines += ["", f"🚶 <b>Loslaufen um {hhmm(leave, tz)}</b>", f"({walk_min} min zum Bahnhof)"]
 
     if extra > 0:
-        lines += ["", "<i>Warum:</i>"]
+        # Das Regelmodell nennt WELCHER Zug wo kreuzt - das ist seine Stärke und die
+        # einzige Begründung, die das ML-Modell nicht liefern kann. Seine berechnete
+        # Wartezeit wird NICHT mehr als Minutenzahl gezeigt: im Replay über 2025
+        # (ml/replay_2025.py) waren 73 % dieser Blockaden Fehlalarme, der Ist-Median
+        # lag bei 2 min. Eine Zahl wie "wartet 15 min" neben einer Prognose von
+        # "+2 min" widerspricht sich und schlägt grundlos Alarm. Stattdessen die
+        # gemessene Trefferquote.
+        lines += ["", "<i>Möglicher Konflikt auf dem eingleisigen Abschnitt:</i>"]
+        orte = []
         for h in est.holds:
             for cf in h.conflicts:
                 why = "kommt entgegen" if cf.kind == "gegenzug" else "hat Vorrang"
                 lines.append(f"• {html.escape(cf.other.label)} {why}")
-            lines.append(f"• Wartet ~{minutes(h.wait)} min in {html.escape(h.at)}")
-        lines += ["", "<i>Schätzung – lieber nicht zu knapp.</i>"]
+            orte.append(h.at)
+        if orte:
+            lines.append(f"• Kreuzungspunkt: {html.escape(', '.join(dict.fromkeys(orte)))}")
+        lines += ["", "<i>Aus solchen Lagen werden in etwa jedem vierten Fall "
+                      "5 min oder mehr – meistens nicht.</i>"]
     if est.ml_estimate is not None:
         ml_delay = max(0, minutes(est.ml_estimate - est.planned))
         lines.append(f"<i>Modell +{ml_delay} · DB +{db_delay} · typ. Abweichung ±2 min</i>")
@@ -627,6 +685,40 @@ def in_window(now: datetime, sc: dict) -> bool:
     return start <= now.time().replace(tzinfo=None) <= end
 
 
+def in_recheck_window(now: datetime, sc: dict) -> bool:
+    """Zweites, spaeteres Fenster. Naeher an der Abfahrt ist die Prognose besser
+    (gemessen 1,66 statt 1,84 min MAE), aber eine zweite Nachricht pro Tag waere
+    Laerm - deshalb wird sie nur bei nennenswerter Aenderung verschickt."""
+    if not sc.get("recheck_start"):
+        return False
+    if sc.get("weekdays_only", True) and now.weekday() >= 5:
+        return False
+    start = time.fromisoformat(sc["recheck_start"])
+    end = time.fromisoformat(sc["recheck_end"])
+    return start <= now.time().replace(tzinfo=None) <= end
+
+
+def _state_file() -> Path:
+    return HERE / "last_alarm.json"
+
+
+def letzte_meldung(now: datetime) -> int | None:
+    """Verspaetung der heute schon verschickten Nachricht, falls es eine gab."""
+    try:
+        d = json.loads(_state_file().read_text())
+    except (OSError, ValueError):
+        return None
+    return d.get("delay_min") if d.get("date") == now.date().isoformat() else None
+
+
+def merke_meldung(now: datetime, delay: int) -> None:
+    try:
+        _state_file().write_text(json.dumps({"date": now.date().isoformat(),
+                                             "delay_min": delay, "at": now.isoformat()}))
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="RE19-Morgencheck")
     ap.add_argument("--config", default=str(HERE / "config.toml"))
@@ -641,7 +733,14 @@ def main(argv: list[str] | None = None) -> int:
     cfg = tomllib.loads(Path(args.config).read_text(encoding="utf-8"))
     tz = ZoneInfo(cfg.get("timezone", "Europe/Berlin"))
     now = datetime.now(tz)
-    ok = args.force or args.mock or in_window(now, cfg["schedule"])
+    # Das Nachcheck-Fenster hat Vorrang, falls sich die beiden ueberlappen. So kann
+    # das Hauptfenster grosszuegig bleiben (launchd und GitHub Actions starten mit
+    # Verzoegerung), ohne dass der Nachcheck nie greift. Lief der erste Check gar
+    # nicht, ist noch keine Meldung gespeichert und der Nachcheck schickt die
+    # vollstaendige Nachricht - es entsteht also keine Luecke.
+    nach = in_recheck_window(now, cfg["schedule"])
+    haupt = (not nach) and in_window(now, cfg["schedule"])
+    ok = args.force or args.mock or haupt or nach
 
     if args.collect:
         import collect
@@ -680,8 +779,22 @@ def main(argv: list[str] | None = None) -> int:
         import collect
 
         collect.log_prediction(HERE / cfg["collect"].get("dir", "data"), now, info, "alarm")
+    # Beim zweiten Lauf nur melden, wenn sich die Schaetzung nennenswert bewegt hat.
+    neu_delay = expected_departure(info["est"])[1] if info.get("est") else None
+    if nach and not haupt and not args.force and not args.mock and neu_delay is not None:
+        vorher = letzte_meldung(now)
+        schwelle = int(cfg["schedule"].get("recheck_min_change_min", 3))
+        if vorher is not None and abs(neu_delay - vorher) < schwelle:
+            print(f"{now:%H:%M}: Nachcheck – unverändert ({vorher:+d} → {neu_delay:+d} min), "
+                  f"keine zweite Nachricht.")
+            return 0
+        if vorher is not None:
+            text = (f"🔄 <b>Aktualisierung</b> (vorher +{vorher} min)\n\n" + text)
+
     deliver(text, args.dry_run)
     alarm(info.get("est"), cfg, tz, args.dry_run)
+    if neu_delay is not None and not args.mock and not args.dry_run:
+        merke_meldung(now, neu_delay)
     return 0
 
 

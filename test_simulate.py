@@ -143,8 +143,14 @@ def test_mock_full_pipeline():
     with contextlib.redirect_stdout(buf):
         assert re19watch.main(["--mock", "--dry-run"]) == 0
     out = buf.getvalue()
-    assert "ICE 1606" in out and "⚠️" in out and "fehlgeschlagen" not in out, out
-    assert "🚨 Alarm: RE 19 verspätet | +15 min – Abfahrt ~07:35" in out and "Loslaufen um 07:30" in out, out
+    assert "ICE 1606" in out and "fehlgeschlagen" not in out, out
+    # Die BEGRUENDUNG kommt weiter aus dem Regelmodell - es erkennt die Kreuzung und
+    # benennt den Ort. Die ZAHL kommt seit 10/2026 allein aus dem ML-Modell: das Veto
+    # des Regelmodells war ueber das Jahr 2025 gemessen schaedlich (07:20-Slot 4,19
+    # statt 2,47 min MAE, 73 % Fehlalarme). Der Test haelt genau diese Trennung fest.
+    assert "kommt entgegen" in out and "Rödental" in out, out
+    assert "Modell +" in out and "DB +" in out, out
+    assert "🚨 Alarm: RE 19 verspätet" in out or "Abfahrt ~07:2" in out, out
 
 
 def test_collect_rows_and_prediction_record():
@@ -165,7 +171,23 @@ def test_collect_rows_and_prediction_record():
     now = at(6, 55)
     _, info = re19watch.run_check(CFG, now, client=re19watch.MockTimetablesClient(TZ, now))
     rec = collect.prediction_record(now, info, "test")
-    assert rec["expected_delay_min"] == 15 and rec["holds"][0]["conflicts"][0]["with"].startswith("ICE 1606")
+    # Das Regelmodell erkennt die Kreuzung weiterhin und benennt den Gegenzug -
+    # die ausgegebene Zahl stammt aber aus dem ML-Modell (Veto 10/2026 entfernt).
+    assert rec["holds"][0]["conflicts"][0]["with"].startswith("ICE 1606")
+    assert rec["expected_delay_min"] >= 0
+
+    # Schluesselnamen des Prognose-Protokolls festnageln. Bis 10/2026 stand unter
+    # "model_estimate" das REGELMODELL und die ML-Prognose wurde gar nicht geloggt;
+    # der Fehler blieb monatelang unentdeckt, weil kein Test die Felder geprueft hat.
+    assert "rule_estimate" in rec and "ml_estimate" in rec, sorted(rec)
+    assert "model_estimate" not in rec, "alter, irrefuehrender Schluesselname"
+    assert rec["rule_estimate"] == info["est"].estimate.isoformat()
+    ml = info["est"].ml_estimate
+    assert rec["ml_estimate"] == (ml.isoformat() if ml else None)
+    for k in ("snapshot", "planned", "db_when", "sim_plan", "sim_prog",
+              "expected", "expected_delay_min", "extra_vs_db_min", "holds",
+              "risiko_zuschlag_min", "risiko_grund"):
+        assert k in rec, f"{k} fehlt im Protokoll"
 
 
 if __name__ == "__main__":

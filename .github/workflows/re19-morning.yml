@@ -3,7 +3,8 @@ name: RE19 Morgen-Check
 on:
   schedule:
     # UTC! Sommer (MESZ) und Winter (MEZ) doppelt – das Gate lässt nur 07:05 Ortszeit durch.
-    - cron: "5 5,6 * * 1-5"    # 07:05 Ortszeit
+    - cron: "5 5,6 * * 1-5"     # 07:05 Ortszeit (Sommer- und Winterzeit, das Gate filtert)
+    - cron: "14 5,6 * * 1-5"    # 07:14 Nachcheck, meldet nur bei Aenderung >= 3 min
   workflow_dispatch:
     inputs:
       mode:

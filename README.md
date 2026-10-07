@@ -10,13 +10,21 @@ Zweimal simuliert: einmal mit Soll-Zeiten, einmal mit Prognosen. Zusätzlich sch
 ML-Modell die tatsächliche Verspätung aus DB-Prognose, Oberlauf, Konfliktzügen und dem
 Zug, der unmittelbar vor mir über den eingleisigen Abschnitt fährt.
 
-Für die ausgegebene Zahl wird das **ML-Modell direkt** verwendet, nicht als `max()` mit der
-DB verrechnet – gemessen ist das die bessere Variante, weil das Modell auch korrekte
-Abwärtskorrekturen liefert. Zwei Sicherungen bleiben: eine Plausibilitätsgrenze gegen
-Ausreißer, und ein Veto des Regelmodells **nur nach oben** – hat die Simulation eine
-konkrete Blockade auf dem eingleisigen Abschnitt berechnet, darf das ML-Modell nicht
-darunter gehen (es kennt die Gleisbelegung nicht). Fehlt das Modell oder eine
-ML-Abhängigkeit, läuft der physikalische Regelcheck als Rückfallebene.
+**Arbeitsteilung zwischen beiden Modellen** (so, wie die Messung sie ergeben hat):
+
+- Die **Zahl** kommt allein aus dem ML-Modell, mit einer Plausibilitätsgrenze gegen
+  Ausreißer. Das Regelmodell hat darauf keinen Einfluss mehr.
+- Das **Regelmodell** liefert die Begründung – *welcher* Zug *wo* kreuzt. Das kann das
+  ML-Modell nicht, und es ist der verständlichere Teil der Nachricht.
+- Fehlt das ML-Modell oder eine seiner Abhängigkeiten, bleibt der Regelcheck als
+  Rückfallebene aktiv.
+
+Früher durfte das Regelmodell die Schätzung nach oben überstimmen. Ein Replay über das
+ganze Jahr 2025 (`ml/replay_2025.py`, 4291 Zielzüge) hat gezeigt, dass das schadet: es
+erkennt eine Blockade bei 13,7 % der Züge, davon sind **73 % Fehlalarme**, und mit Veto
+wurde der 07:20-Slot auf 4,19 min MAE verschlechtert statt 2,47 – schlechter sogar als
+die DB-Prognose. Auch auf die präzise Teilmenge begrenzt blieb es schädlich. Das Veto
+ist deshalb entfernt.
 
 ## Einrichtung (ca. 15 min)
 
@@ -69,6 +77,45 @@ entfernt wurden: 3,26 gegenüber 3,72 min für die DB, in 68 % der Fälle näher
 Das stärkste einzelne Feature ist die Verspätung des Zuges, der kurz vor mir über den
 eingleisigen Abschnitt fährt – stärker als die DB-Prognose selbst. Details, Methodik und
 die verworfenen Varianten stehen in [`ml/README.md`](ml/README.md).
+
+## Zielerreichung
+
+Drei Ziele, gemessen mit `ml/zielpruefung.py` über fünf gleitende Zweimonatsfenster
+(trainiert immer nur mit Daten *vor* dem Testfenster, n = 6465):
+
+**1. Konfliktfälle richtig treffen** – mittlerer absoluter Fehler in Minuten:
+
+| Lage | n | Modell | DB |
+|---|---|---|---|
+| ICE fährt nah (≤15 min) und ≥10 min verspätet | 334 | **2,71** | 3,21 |
+| vorausfahrender Zug ≥8 min verspätet | 357 | **3,64** | 4,94 |
+| davon mit tatsächlich ≥5 min Verspätung | 309 | **4,74** | 7,19 |
+
+**2. Im Alltag besser als der DB Navigator:**
+
+| Slice | n | Modell | DB | Modell näher |
+|---|---|---|---|---|
+| alle Abfahrten | 6465 | **1,69** | 2,22 | 70 % |
+| **der 07:20-Zug** | 216 | **2,31** | 3,03 | 68 % |
+| morgens 6–8 h Mo–Fr | 694 | **2,42** | 3,12 | 69 % |
+| Ist ≥ 5 min | 1209 | **4,88** | 6,37 | 87 % |
+| Ist < 5 min | 5256 | **0,95** | 1,27 | 66 % |
+| eigene Messungen 2026 (n=185) | | **1,83** | 2,03 | 57 % |
+| eigene Messungen, Ist ≥ 5 min (n=28) | | **4,95** | 6,82 | 93 % |
+
+**3. Nicht grundlos Alarm schlagen** – der laute ntfy-Alarm ab 4 min erwarteter
+Verspätung (die Telegram-Nachricht kommt ohnehin immer):
+
+| Alarm ausgelöst durch | Alarme/Jahr | davon ≥5 min | erkennt von allen ≥5 min |
+|---|---|---|---|
+| **Modell ab 4 min** | 30 | **69,7 %** | **44,8 %** |
+| DB-Prognose ab 4 min | 19 | 77,3 % | 31,6 % |
+| früheres Regelmodell-Veto | 55 | 47,5 % | 51,2 % |
+
+Bei gleicher Messlatte (»lag wirklich mindestens so viel Verspätung vor, wie der Alarm
+behauptet«) liegt das Modell bei 85,1 %, der DB Navigator bei 85,6 % – gleich treffsicher
+also, aber mit deutlich mehr erkannten Fällen. Die Schwelle 4 ist gemessen gewählt; bei 3
+wären 30 % der Fehlalarme Züge mit 0–1 min Verspätung.
 
 ## Datenquellen und Lizenz
 

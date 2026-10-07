@@ -24,6 +24,14 @@ OUT = str(DATA / "features_werrabahn.parquet")
 
 LEAD_MIN = 15          # Abfrage so viele Minuten vor planmaessiger Abfahrt
 CONFLICT_WINDOW = 30   # +/- Minuten um meine Soll-Abfahrt fuer Konfliktzuege
+# Kandidaten werden deutlich weiter gefasst als das Konfliktfenster, weil ein stark
+# verspaeteter Zug erst durch seine Verspaetung in mein Fenster rutscht. Beispiel aus
+# den Daten: ICE 1604, Soll-Abfahrt Coburg 06:43, +37 min -> real 07:20, also genau im
+# Weg des 07:20-Zuges, obwohl seine Soll-Zeit 37 min vor meiner liegt. Mit einem
+# Soll-Filter von +/-30 min war dieser Zug - und damit alle drei 07:20-Konfliktfaelle
+# des Jahres 2025 - unsichtbar. Muss zu window_before_min/window_after_min in
+# config.toml passen, sonst sieht das Modell im Betrieb andere Zuege als beim Lernen.
+KAND_VOR, KAND_NACH = 90, 30
 VOR_WINDOW = 45        # so weit zurueck wird nach dem vorausfahrenden Zug gesucht
 
 DOERFLES = 8001484
@@ -132,9 +140,24 @@ def main():
                              np.nan, 0, np.nan, np.nan))
             continue
         for _, r in g.iterrows():
-            lo = r["sched_dep"] - pd.Timedelta(minutes=CONFLICT_WINDOW)
-            hi = r["sched_dep"] + pd.Timedelta(minutes=CONFLICT_WINDOW)
-            near = cday[(cday["time_schedule"] >= lo) & (cday["time_schedule"] <= hi)]
+            lo = r["sched_dep"] - pd.Timedelta(minutes=KAND_VOR)
+            hi = r["sched_dep"] + pd.Timedelta(minutes=KAND_NACH)
+            weit = cday[(cday["time_schedule"] >= lo) & (cday["time_schedule"] <= hi)]
+            kn = weit[weit["update_timestamp"] <= r["T"]]
+            # Auswahl nach VORAUSSICHTLICHER Durchfahrt, nicht nach Soll-Zeit: genau so
+            # faellt ein stark verspaeteter Zug in mein Fenster. Fuer Zuege ohne bekannte
+            # Verspaetung gilt die Soll-Zeit.
+            if len(kn):
+                letzte = kn.sort_values("update_timestamp").groupby("trip_id").last()
+                pass_t = letzte["time_schedule"] + pd.to_timedelta(letzte["delay_min"], unit="m")
+                drin = pass_t[(pass_t >= r["sched_dep"] - pd.Timedelta(minutes=CONFLICT_WINDOW)) &
+                              (pass_t <= r["sched_dep"] + pd.Timedelta(minutes=CONFLICT_WINDOW))].index
+            else:
+                drin = pd.Index([])
+            ohne = weit[~weit["trip_id"].isin(kn["trip_id"])]
+            ohne = ohne[(ohne["time_schedule"] >= r["sched_dep"] - pd.Timedelta(minutes=CONFLICT_WINDOW)) &
+                        (ohne["time_schedule"] <= r["sched_dep"] + pd.Timedelta(minutes=CONFLICT_WINDOW))]
+            near = weit[weit["trip_id"].isin(drin) | weit["trip_id"].isin(ohne["trip_id"])]
             known = near[near["update_timestamp"] <= r["T"]]
             ice_known = known[known["category"] == "ICE"]
             n_ice = near[near["category"] == "ICE"]["trip_id"].nunique()

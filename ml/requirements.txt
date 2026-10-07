@@ -2,3 +2,5 @@ pandas>=2.2
 pyarrow>=16.0
 scikit-learn>=1.5
 joblib>=1.4
+# nur fuer replay_2025.py: importiert den Produktionscode re19watch
+requests>=2.31

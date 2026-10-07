@@ -25,6 +25,13 @@ coburg_id = "8001338"
 window_start = "07:00"
 window_end = "07:19"
 weekdays_only = true
+# Zweiter Blick kurz vor der Abfahrt. Naeher dran ist die Prognose messbar besser
+# (MAE 1,66 statt 1,84), eine zweite Nachricht jeden Tag waere aber nur Laerm -
+# deshalb geht sie nur raus, wenn sich die Schaetzung um mindestens
+# recheck_min_change_min Minuten gegenueber der ersten Nachricht bewegt hat.
+recheck_start = "07:12"
+recheck_end = "07:17"
+recheck_min_change_min = 3
 
 [priority]
 # Vorrang je Linie, überschreibt die Produktklasse (ICE 4, IC 3, RE 2, RB 1).
@@ -34,7 +41,16 @@ lines = { "RE 29" = 3, "RE 19" = 2, "RE 28" = 2 }
 [alarm]
 # Lauter Push-Alarm über ntfy (App "ntfy", Kanal = Env NTFY_TOPIC), nur bei Verspätung
 enabled = true
-min_delay_min = 3              # ab so viel erwarteter Verspätung
+# Schwelle für den LAUTEN Alarm (die Telegram-Nachricht kommt ohnehin immer).
+# Gemessen über fünf gleitende Fenster 2025 (ml/zielpruefung.py), Vergleich bei
+# gleicher Messlatte "wie oft lag wirklich mindestens so viel Verspätung vor":
+#   Schwelle 3: 47 Alarme/Jahr, 80,7 % berechtigt, erkennt 59,6 % der Fälle ab 5 min
+#   Schwelle 4: 30 Alarme/Jahr, 85,1 % berechtigt, erkennt 44,8 %   <- gewählt
+#   Schwelle 5: 22 Alarme/Jahr, 86,9 % berechtigt, erkennt 35,5 %
+#   DB ab 3:    24 Alarme/Jahr, 85,6 % berechtigt, erkennt 37,6 %
+# Bei 4 ist die Trefferquote so gut wie beim DB Navigator, es werden aber mehr
+# echte Verspätungen erkannt. Bei 3 wären 30 % der Fehlalarme Züge mit 0-1 min.
+min_delay_min = 4
 priority = 5                   # 5 = dringend (lauter Ton, lange Vibration)
 server = "https://ntfy.sh"
 
@@ -42,7 +58,12 @@ server = "https://ntfy.sh"
 # "timetables" = DB API Marketplace (Env: DB_CLIENT_ID, DB_API_KEY); "vendo" = db-vendo-client unter base_url
 provider = "timetables"
 base_url = "http://localhost:3000"
-window_before_min = 35   # ab wann vor deiner Abfahrt Coburg-Tafeln gelesen werden (Tafel = 60 min)
+# Wie weit vor der eigenen Abfahrt die Coburg-Tafel gelesen wird, und wie weit darueber
+# hinaus. Die Tafel filtert nach SOLL-Zeit: ein Zug mit Soll 06:43 und +40 min faehrt real
+# um 07:23 in meinen Weg, war mit den alten 35 min (Tafel ab 06:45) aber unsichtbar.
+# Genau so sind 2025 alle drei 07:20-Konfliktfaelle durchgerutscht (jedes Mal ICE 1604).
+window_before_min = 90
+window_after_min = 30
 
 [collect]
 # Datensammlung fürs spätere Modell (python re19watch.py --collect, per launchd alle 5 min)

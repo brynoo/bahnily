@@ -113,6 +113,10 @@ def prediction_record(now: datetime, info: dict, source: str) -> dict:
         "rule_estimate": est.estimate.isoformat(),
         "ml_estimate": est.ml_estimate.isoformat() if est.ml_estimate else None,
         "expected": dep.isoformat(), "expected_delay_min": delay,
+        # Obergrenze der angezeigten Spanne, damit spaeter pruefbar ist, ob die
+        # gemessene p90-Streuung in der Praxis stimmt.
+        "risiko_zuschlag_min": getattr(est, "risiko_zuschlag", 0.0),
+        "risiko_grund": getattr(est, "risiko_grund", ""),
         "extra_vs_db_min": est.extra_vs_db.total_seconds() / 60,
         "baseline_error_min": est.baseline_error.total_seconds() / 60,
         "holds": [{
