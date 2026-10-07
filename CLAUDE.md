@@ -40,9 +40,14 @@ DB Navigator die Verspätung zeigt.
   über die Einschleifung). RE 29 hat laut Beobachtung Vorrang vor RE 19/28 (`[priority.lines]`).
 - DB blockt db-vendo-client (dbnav/db: OPS_BLOCKED, dbweb: 403) → Timetables-API, läuft.
 
-## Offene Annahmen (noch unbestätigt)
-- ICE-Fahrzeiten im Korridor geschätzt; Regionalzeiten grob aus dem Fahrplan
-  (Rödental → Dörfles-Esbach = 3 min laut Benjamin).
+## Offene Annahmen
+- ICE-Fahrzeiten im Korridor (`fast`) weiter geschätzt. Nicht direkt messbar, da ICE an
+  keiner Werrabahn-Station halten. Summe Coburg → Abzweig SFS = 3,5 min für 4,2 km aus
+  dem Stand ist plausibel, aber unbelegt.
+- ERLEDIGT 10/2026: Die Regionalzeiten sind an 7.338 Fahrten aus den 2025er-Daten
+  geprüft und stimmen exakt mit config.toml (Median Soll = Ist): Rödental→Dörfles 3,
+  Dörfles→Coburg Nord 3, Coburg Nord→Coburg 2, gesamt Dörfles→Coburg 5 min.
+  Streuung p10/p90 = 2/3 bzw. 3/3 min, also sehr stabil.
 
 ## Nächste Schritte
 1. Kalibrieren über predictions.csv (tatsächliche Abfahrt manuell eintragen).
