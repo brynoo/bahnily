@@ -2,6 +2,11 @@
 
 Jeden Werktag um 07:05 eine Telegram-Nachricht: Wird mein **RE 19 ab Dörfles-Esbach 07:20** auf dem eingleisigen Abschnitt Rödental – Coburg durch einen Zug mit Vorrang aufgehalten – *bevor* der DB Navigator es anzeigt?
 
+**Ergebnis:** auf dem 07:20-Zug liegt die Schätzung bei 2,27 min mittlerem Fehler gegenüber
+3,03 min für die DB-Prognose zum selben Zeitpunkt – gemessen an einem Jahr Echtdaten, bei
+dem immer nur mit Daten *vor* dem Testzeitraum trainiert wurde. Bei Verspätungen ab 5 min
+4,88 gegenüber 6,37. Die ausführlichen Zahlen und die Grenzen stehen weiter unten.
+
 ## Warum das funktionieren kann
 
 Die DB-Prognose für den RE 19 reagiert erst, wenn der RE selbst später dran ist. Die Verspätung eines ICE, der gleich den eingleisigen Abschnitt Coburg – Einschleifung belegt, ist aber oft **schon bekannt**. re19-watch rechnet mit deinen Fahrzeiten aus, ob sich die beiden Belegungen überschneiden und wer warten muss.
@@ -138,3 +143,36 @@ wären 30 % der Fehlalarme Züge mit 0–1 min Verspätung.
   Abfragezeitpunkt. Dort liegt die Grenze nicht am Modell, sondern an der Information.
 - GitHub-Cronjobs können sich einige Minuten verspäten.
 - Daten: offizielle DB-API „Timetables“ (DB API Marketplace, kostenlos). db-vendo-client wird von der DB geblockt.
+
+## Wie dieses Projekt entstanden ist
+
+Gebaut mit KI-Unterstützung (Claude Code), und zwar offen so dokumentiert: die
+Commit-Nachrichten tragen einen `Co-Authored-By`-Hinweis, und `CLAUDE.md` enthält den
+Projektkontext, mit dem das Modell arbeitet. Wer die Historie liest, soll sehen, wie
+gearbeitet wurde.
+
+Was dabei aus der Strecken- und Betriebskenntnis kam und ohne das nichts davon funktioniert
+hätte:
+
+- **Die Streckenlogik.** Dass der Signalblock von Coburg durchgehend bis Rödental reicht und
+  dort und in Coburg die einzigen Kreuzungsmöglichkeiten liegen – gegengeprüft auf
+  OpenRailwayMap. Eine erste Modellversion hatte Coburg Nord fälschlich als zweigleisig
+  angenommen; das wurde korrigiert.
+- **Welche Züge überhaupt zählen.** agilis, RB, STB und Bus stehen auf den Tafeln von Coburg
+  und Sonneberg, befahren den Abschnitt Coburg–Sonneberg aber nicht. Sie versuchsweise als
+  Konfliktzüge aufzunehmen hat das Modell messbar verschlechtert (07:20: 2,21 statt 2,16).
+- **Der Vorrang des RE 29** vor RE 19/RE 28 – eine Beobachtung aus dem Betrieb, die in keinem
+  Datensatz steht und in `[priority.lines]` eingetragen ist.
+- **Die Hypothese, dass die vorausfahrenden Züge das Problem sind.** Daraus wurde
+  `vorgaenger_delay`, das stärkste Feature des Modells – stärker als die DB-Prognose selbst.
+- **Die Frage nach der Kaskade** (der ICE wirft mich zurück, danach hält mich der RE 29 ein
+  zweites Mal auf). Sie hat eine echte Lücke im ML-Modell aufgedeckt, die vorher niemandem
+  aufgefallen war.
+- **Das Beharren auf Überprüfung.** Mehrere Zwischenergebnisse, die plausibel klangen, haben
+  einer Messung nicht standgehalten und wurden verworfen – darunter ein selbst eingebautes
+  Veto des Regelmodells, das sich über ein ganzes Jahr gerechnet als schädlich erwies
+  (73 % Fehlalarme), und eine Untergrenze an der DB-Prognose, die auf einem Datensatz besser
+  und auf dem anderen schlechter war und deshalb nicht übernommen wurde.
+
+Die Arbeitsweise ist in dem Sinne der eigentliche Inhalt: nichts behaupten, was nicht
+gemessen ist, und eigene Ideen verwerfen, wenn die Daten dagegen sprechen.
