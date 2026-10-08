@@ -117,8 +117,12 @@ ML_FEATURES = [
     "n_upstream_known", "last_known_delay", "max_upstream_delay", "upstream_trend",
     "conflict_max_delay", "conflict_mean_delay", "n_conflict_trips", "ice_max_delay", "n_ice_nearby",
     "conflict_gap_min", "ice_gap_min", "vorgaenger_delay", "vorgaenger_luecke_min",
+    "n_eng", "n_eng_vorrang", "gap_2nd",
     "hour", "minute_of_day", "dow", "month", "is_weekend",
 ]
+# Belegungsfenster des eigenen Zuges (Dörfles ab bis Coburg an = 5 min, plus Puffer).
+# Muss zu BELEG_VON/BELEG_BIS in ml/build_features.py passen.
+BELEG_VON, BELEG_BIS = -2.0, 8.0
 VOR_WINDOW_MIN = 45   # muss zu VOR_WINDOW in ml/build_features.py passen
 
 # Wie weit die echte Verspaetung typischerweise UEBER der Prognose liegt (p90 des
@@ -390,6 +394,21 @@ def ml_prediction(client: DbClient, cfg: dict, me_ev: Event, deps: list[Event], 
     row["n_conflict_trips"] = len({ev.trip_id for ev in conflicts})
     row["ice_max_delay"] = max((ev.delay_min for ev in ice if ev.delay_min is not None), default=np.nan)
     row["n_ice_nearby"] = len({ev.trip_id for ev in ice})
+    # Kaskade: nicht nur der erste Vorrangzug zählt. Wirft mich der ICE zurück, läuft
+    # ich danach in den RE 29 (Coburg ab 07:27, Vorrang 3 laut config.toml). Gemessen
+    # über 2025: kein Vorrangzug im Belegungsfenster -> 14,5 % der Fahrten >= 5 min
+    # Verspätung, einer -> 25,9 %, zwei -> 36,9 %.
+    # Kandidaten sind ALLE Konfliktzüge der Tafel, nicht nur die im +/-30-Fenster -
+    # genauso wie im Training (ml/build_features.py).
+    kand = [ev for ev in deps + arrs if _ist_konfliktzug(ev) and (ev.when or ev.planned)]
+    luecken = [((ev.when or ev.planned) - planned).total_seconds() / 60 for ev in kand]
+    row["n_eng"] = sum(1 for g in luecken if BELEG_VON <= g <= BELEG_BIS)
+    row["n_eng_vorrang"] = sum(
+        1 for ev, g in zip(kand, luecken)
+        if BELEG_VON <= g <= BELEG_BIS and priority(ev, cfg, 2) >= 3)
+    if len(luecken) >= 2:
+        row["gap_2nd"] = sorted(abs(g) for g in luecken)[1]
+
     passages = [ev.when for ev in conflicts if ev.when]
     ice_passages = [ev.when for ev in ice if ev.when]
     row["conflict_gap_min"] = min((abs((value - planned).total_seconds()) / 60 for value in passages), default=np.nan)

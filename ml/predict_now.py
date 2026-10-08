@@ -43,6 +43,7 @@ FEATURES = [
     "conflict_max_delay", "conflict_mean_delay", "n_conflict_trips",
     "ice_max_delay", "n_ice_nearby", "conflict_gap_min", "ice_gap_min",
     "vorgaenger_delay", "vorgaenger_luecke_min",
+    "n_eng", "n_eng_vorrang", "gap_2nd",
     "hour", "minute_of_day", "dow", "month", "is_weekend",
 ]
 
@@ -173,6 +174,26 @@ def main():
     else:
         row["vorgaenger_delay"] = np.nan
         row["vorgaenger_luecke_min"] = np.nan
+
+    # Kaskade: Vorrangzuege im eigenen Belegungsfenster (identisch zu build_features.py)
+    BELEG_VON, BELEG_BIS = -2.0, 8.0
+    luecken, vorrang = [], []
+    for (t2, e2, k2), pl2 in plan_by.items():
+        if t2 == trip or not pl2:
+            continue
+        info2 = meta.get(t2, {})
+        if info2.get("line") not in ("RE28", "RE29") and info2.get("category") != "ICE":
+            continue
+        d2 = delay_min(t2, e2, k2)
+        if np.isnan(d2):
+            continue
+        g = ((pl2 + timedelta(minutes=d2)) - sched_dep).total_seconds() / 60
+        luecken.append(g)
+        vorrang.append(4 if info2.get("category") == "ICE" else (3 if info2.get("line") == "RE29" else 2))
+    row["n_eng"] = sum(1 for g in luecken if BELEG_VON <= g <= BELEG_BIS)
+    row["n_eng_vorrang"] = sum(1 for g, pr in zip(luecken, vorrang)
+                               if BELEG_VON <= g <= BELEG_BIS and pr >= 3)
+    row["gap_2nd"] = sorted(abs(g) for g in luecken)[1] if len(luecken) >= 2 else np.nan
 
     loc = sched_dep.astimezone(TZ)
     row["hour"] = loc.hour

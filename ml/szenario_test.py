@@ -33,6 +33,7 @@ FEATURES = [
     "conflict_max_delay", "conflict_mean_delay", "n_conflict_trips",
     "ice_max_delay", "n_ice_nearby", "conflict_gap_min", "ice_gap_min",
     "vorgaenger_delay", "vorgaenger_luecke_min",
+    "n_eng", "n_eng_vorrang", "gap_2nd",
     "hour", "minute_of_day", "dow", "month", "is_weekend",
 ]
 
@@ -94,6 +95,12 @@ def gelernt(model, ice_delay, re29_delay, vorgaenger=0.0):
         # Vorausfahrender/kreuzender Zug: der RE19 der Gegenrichtung, planmaessig
         # 41 min vor meiner Abfahrt in Doerfles.
         "vorgaenger_delay": float(vorgaenger), "vorgaenger_luecke_min": 41.0,
+        # Kaskade: Abstand der Ist-Durchfahrt zu meiner Soll-Abfahrt. ICE planmaessig
+        # Coburg ab 07:12 -> Luecke = -8 + Verspaetung; RE 29 ab 07:27 (+3) -> +10,
+        # liegt also ausserhalb des Belegungsfensters -2..+8.
+        "n_eng": int(-2 <= -8 + ice_delay <= 8) + int(-2 <= 10 <= 8),
+        "n_eng_vorrang": int(-2 <= -8 + ice_delay <= 8) + int(-2 <= 10 <= 8),
+        "gap_2nd": max(abs(-8 + ice_delay), 10.0),
         "hour": 7, "minute_of_day": 7 * 60 + 20, "dow": 0, "month": 10, "is_weekend": 0,
     }
     return float(model.predict(pd.DataFrame([row])[FEATURES])[0])

@@ -359,3 +359,53 @@ Gemessene Streuung nach oben (p90 des Residuums, n=6465):
 Daraus die Obergrenze in der Nachricht (»Kann bis +X min werden«). Der Punktwert bleibt
 die Prognose – so wird nicht grundlos Alarm geschlagen, die Unsicherheit aber benannt.
 Gezeigt wird die Spanne nur, wenn die Lage riskanter als normal ist.
+
+## Kaskade: der zweite Vorrangzug (`n_eng`, `n_eng_vorrang`, `gap_2nd`)
+
+Benjamins Beobachtung: wenn der ICE Vorfahrt hat und mich zurückwirft, laufe ich danach
+in den **RE 29** (Coburg ab 07:27, Vorrang 3 laut `[priority.lines]`) — und der hält mich
+ein zweites Mal auf. Das Regelmodell rechnet das korrekt, weil `resolve()` nach jeder
+Verschiebung neu prüft:
+
+| Szenario | Wartezeit | Abfahrt |
+|---|---|---|
+| nur ICE 1604 +38 | 6,5 min | 07:26 |
+| nur RE 29 (planmäßig 07:27) | 0,0 min | 07:20 |
+| **ICE +38 und RE 29 planmäßig** | **15,0 min** | 07:35 |
+| **ICE +38 und RE 29 +4** | **19,0 min** | 07:39 |
+
+Der RE 29 allein stört nicht — um 07:27 ist mein Zug normalerweise schon in Coburg (07:25).
+
+Das **ML-Modell** sah davon nichts: bei 1, 2 oder 3 Konfliktzügen sagte es unverändert
++9,4. `n_conflict_trips` zählt alle Züge im ±30-Minuten-Fenster und misst damit die
+Verkehrsdichte, nicht die Kaskade — empirisch trägt es auch kein Signal (Ist-Median 3,0
+bei einem Konfliktzug, 2,0 bei zwei bis sechs).
+
+Mit einem schärferen Maß ist das Signal dagegen deutlich. Gezählt werden Züge, deren
+**voraussichtliche Durchfahrt in das eigene Belegungsfenster fällt** (−2 bis +8 min um
+die Soll-Abfahrt; Dörfles → Coburg sind 5 min, an 7338 Fahrten geprüft):
+
+| Vorrangzüge im Belegungsfenster | n | Ist-Median | Anteil ≥5 min |
+|---|---|---|---|
+| 0 | 6996 | 1,0 | 14,5 % |
+| 1 | 1682 | 2,0 | 25,9 % |
+| **2** | 84 | **3,0** | **36,9 %** |
+
+Daraus drei Features: `n_eng` (Züge im Fenster), `n_eng_vorrang` (davon ICE oder RE 29)
+und `gap_2nd` (zweitkleinster Abstand). Wirkung, fünf gleitende Fenster:
+
+| Slice | ohne | mit |
+|---|---|---|
+| Gesamt (n=6465) | 1,69 | 1,68 |
+| 07:20-Slot (n=216) | 2,31 | **2,29** |
+| zwei Vorrangzüge (n=52) | 2,29 | **2,21** |
+| mindestens einer (n=1288) | 2,16 | **2,13** |
+
+**Ehrliche Einordnung:** der Gewinn ist klein und bei n=52 nicht belastbar. Übernommen,
+weil er genau in den Zielfällen auftritt, nirgends schadet und `gap_2nd` auf Rang 10 von
+27 Features landet — das Modell nutzt die Information also. `BELEG_VON`/`BELEG_BIS` müssen
+zwischen `build_features.py` und `re19watch.py` übereinstimmen.
+
+Nebenbei zeigte der Live-Test, dass der 07:20-Zug diese Lage **routinemäßig** hat: am
+08.10.2026 lagen drei Konfliktzüge im Belegungsfenster, zwei davon mit Vorrang
+(RE 29 um 07:20, RE 28 um 07:24, RE 29 um 07:27).

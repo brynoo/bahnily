@@ -32,6 +32,13 @@ CONFLICT_WINDOW = 30   # +/- Minuten um meine Soll-Abfahrt fuer Konfliktzuege
 # des Jahres 2025 - unsichtbar. Muss zu window_before_min/window_after_min in
 # config.toml passen, sonst sieht das Modell im Betrieb andere Zuege als beim Lernen.
 KAND_VOR, KAND_NACH = 90, 30
+# Belegungsfenster des eigenen Zuges: Doerfles ab bis Coburg an sind 5 min (an 7338
+# Fahrten geprueft), plus Puffer. Ein Vorrangzug, dessen voraussichtliche Durchfahrt
+# hier hineinfaellt, blockiert die Fahrstrasse. Zwei davon sind die Kaskade: der ICE
+# wirft mich zurueck, danach kommt der RE 29 (Coburg ab 07:27, ebenfalls Vorrang).
+# Gemessen: 0 Vorrangzuege im Fenster -> 14,5 % der Fahrten >= 5 min Verspaetung,
+# einer -> 25,9 %, zwei -> 36,9 %.
+BELEG_VON, BELEG_BIS = -2.0, 8.0
 VOR_WINDOW = 45        # so weit zurueck wird nach dem vorausfahrenden Zug gesucht
 
 DOERFLES = 8001484
@@ -137,7 +144,7 @@ def main():
         if cday.empty:
             for _, r in g.iterrows():
                 rows.append((r["trip_id"], np.nan, np.nan, 0,
-                             np.nan, 0, np.nan, np.nan))
+                             np.nan, 0, np.nan, np.nan, 0, 0, np.nan))
             continue
         for _, r in g.iterrows():
             lo = r["sched_dep"] - pd.Timedelta(minutes=KAND_VOR)
@@ -163,7 +170,7 @@ def main():
             n_ice = near[near["category"] == "ICE"]["trip_id"].nunique()
             if known.empty:
                 rows.append((r["trip_id"], np.nan, np.nan, near["trip_id"].nunique(),
-                             np.nan, n_ice, np.nan, np.nan))
+                             np.nan, n_ice, np.nan, np.nan, 0, 0, np.nan))
             else:
                 last = known.sort_values("update_timestamp").groupby("trip_id").last()
                 per_trip = last["delay_min"]
@@ -184,11 +191,24 @@ def main():
                     ice_gap_abs = ice_gap.abs().min()
                 else:
                     ice_gap_abs = np.nan
+                # Kaskade: wie viele Zuege fallen voraussichtlich in mein
+                # Belegungsfenster, und wie viele davon haben Vorrang?
+                k_last = kn.sort_values("update_timestamp").groupby("trip_id").last()
+                k_pass = k_last["time_schedule"] + pd.to_timedelta(k_last["delay_min"], unit="m")
+                k_gap = (k_pass - r["sched_dep"]).dt.total_seconds() / 60
+                k_pr = np.where(k_last["category"] == "ICE", 4,
+                                np.where(k_last["line"] == "RE29", 3, 2))
+                im_fenster = (k_gap >= BELEG_VON) & (k_gap <= BELEG_BIS)
+                n_eng = int(im_fenster.sum())
+                n_eng_vorrang = int((im_fenster & (k_pr >= 3)).sum())
+                gap_2nd = k_gap.abs().nsmallest(2).iloc[-1] if len(k_gap) >= 2 else np.nan
                 rows.append((r["trip_id"], per_trip.max(), per_trip.mean(),
-                             near["trip_id"].nunique(), ice_max, n_ice, gap_min_abs, ice_gap_abs))
+                             near["trip_id"].nunique(), ice_max, n_ice, gap_min_abs, ice_gap_abs,
+                             n_eng, n_eng_vorrang, gap_2nd))
     conf = pd.DataFrame(rows, columns=["trip_id", "conflict_max_delay", "conflict_mean_delay",
                                        "n_conflict_trips", "ice_max_delay", "n_ice_nearby",
-                                       "conflict_gap_min", "ice_gap_min"])
+                                       "conflict_gap_min", "ice_gap_min",
+                                       "n_eng", "n_eng_vorrang", "gap_2nd"])
     tgt = tgt.merge(conf, on="trip_id", how="left")
 
     # ---------------- Vorausfahrender Zug (gleiche Richtung) ----------------

@@ -121,6 +121,7 @@ def demo():
         "max_upstream_delay", "upstream_trend", "conflict_max_delay", "conflict_mean_delay",
         "n_conflict_trips", "ice_max_delay", "n_ice_nearby", "conflict_gap_min", "ice_gap_min",
         "vorgaenger_delay", "vorgaenger_luecke_min",
+        "n_eng", "n_eng_vorrang", "gap_2nd",
         "hour", "minute_of_day", "dow", "month", "is_weekend",
     ]
     sched = TAG.replace(hour=7, minute=20)
@@ -138,7 +139,10 @@ def demo():
         row = {f: 0.0 for f in FEATURES}
         # vorgaenger_luecke_min=0 waere unrealistisch (der Vorgaenger faehrt
         # planmaessig 41 min vor mir); vorgaenger_delay bleibt 0 = puenktlich.
-        row.update(vorgaenger_luecke_min=41.0,
+        _g_ice = -8 + ice          # ICE Coburg ab 07:12, meine Abfahrt 07:20
+        row.update(n_eng=int(-2 <= _g_ice <= 8), n_eng_vorrang=int(-2 <= _g_ice <= 8),
+                   gap_2nd=max(abs(_g_ice), 10.0),   # RE 29 ab 07:27 +3 -> Luecke +10
+                   vorgaenger_luecke_min=41.0,
                    n_upstream_known=5, n_conflict_trips=2, n_ice_nearby=1,
                    hour=7, minute_of_day=440, dow=0, month=10, is_weekend=0,
                    conflict_max_delay=float(max(ice, 3)), conflict_mean_delay=float((ice + 3) / 2),

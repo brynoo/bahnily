@@ -27,6 +27,7 @@ FEATURES = ["db_delay_now","up_sonneberg","up_neustadt","up_moenchroeden","up_ro
   "up_roedental","n_upstream_known","last_known_delay","max_upstream_delay","upstream_trend",
   "conflict_max_delay","conflict_mean_delay","n_conflict_trips","ice_max_delay","n_ice_nearby",
   "conflict_gap_min","ice_gap_min","vorgaenger_delay","vorgaenger_luecke_min",
+  "n_eng","n_eng_vorrang","gap_2nd",
   "hour","minute_of_day","dow","month","is_weekend"]
 
 f = pd.read_parquet(f"{ML}/data/features_werrabahn.parquet")
