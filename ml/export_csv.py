@@ -1,8 +1,13 @@
 """Exportiert die RE19-Fahrten Richtung Coburg/Nuernberg als CSV (eine Zeile je Fahrt).
 
 Quelle ist die gefilterte Jahresdatei data/werrabahn_marschbahn_2025.parquet
-(aus extract_2025.py). Geschrieben wird nach ~/Desktop, Trennzeichen Semikolon und
-Komma als Dezimaltrennzeichen, damit Excel die Datei direkt richtig oeffnet.
+(aus extract_2025.py). Geschrieben wird nach ~/Desktop.
+
+Format: KOMMA als Trennzeichen und Punkt als Dezimaltrennzeichen (RFC 4180). Eine
+frueherere Fassung nutzte Semikolon und Dezimalkomma fuer deutsches Excel - auf dem Mac
+oeffnet eine .csv aber in Numbers, und Numbers erwartet immer Komma. Mit Semikolon landet
+dort die ganze Zeile in einer Spalte. Zusaetzlich wird eine .xlsx geschrieben, bei der die
+Frage nach dem Trennzeichen gar nicht entsteht.
 
 Richtung: nur Fahrten, die in Coburg SPAETER halten als in Doerfles-Esbach - also
 Nord -> Sued. Zuege der Gegenrichtung sind nicht enthalten.
@@ -83,6 +88,7 @@ WOCHENTAG = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(pathlib.Path.home() / "Desktop" / "re19_sonneberg_coburg_2025.csv"))
+    ap.add_argument("--kein-xlsx", action="store_true", help="nur CSV schreiben")
     args = ap.parse_args()
 
     df = pd.read_parquet(HERE / "data" / "werrabahn_marschbahn_2025.parquet")
@@ -146,7 +152,9 @@ def main() -> None:
             if a is not None and len(a):
                 s.update(int(x) for x in a if int(x) > 0)
         codes[trip] = sorted(s)
-    out["gruende_codes"] = pd.Series({k: ", ".join(map(str, v)) for k, v in codes.items()}).reindex(out.index)
+    # Codes mit Leerzeichen trennen: mit Komma muesste die Spalte in einer
+    # Komma-CSV gequotet werden, was manche Parser stolpern laesst.
+    out["gruende_codes"] = pd.Series({k: " ".join(map(str, v)) for k, v in codes.items()}).reindex(out.index)
     out["gruende_text"] = pd.Series(
         {k: "; ".join(GRUENDE.get(c, f"Code {c}") for c in v) for k, v in codes.items()}
     ).reindex(out.index)
@@ -154,8 +162,22 @@ def main() -> None:
     out = out.sort_values(["datum", "doerfles_soll"]).reset_index(drop=True)
 
     ziel = pathlib.Path(args.out).expanduser()
-    out.to_csv(ziel, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+    # Standard-CSV: Komma, Punkt als Dezimaltrennzeichen. BOM, damit Excel die
+    # Umlaute richtig anzeigt - Numbers stoert das nicht.
+    out.to_csv(ziel, index=False, encoding="utf-8-sig")
     print(f"\ngeschrieben: {ziel}")
+
+    if not args.kein_xlsx:
+        xlsx = ziel.with_suffix(".xlsx")
+        with pd.ExcelWriter(xlsx, engine="openpyxl") as xw:
+            out.to_excel(xw, index=False, sheet_name="RE19 Richtung Coburg")
+            bl = xw.sheets["RE19 Richtung Coburg"]
+            bl.freeze_panes = "A2"
+            for i, sp in enumerate(out.columns, start=1):
+                breite = max(len(sp), int(out[sp].astype(str).str.len().max() or 0))
+                bl.column_dimensions[bl.cell(row=1, column=i).column_letter].width = min(breite + 2, 60)
+        print(f"geschrieben: {xlsx}")
+
     print(f"{len(out)} Zeilen, {len(out.columns)} Spalten, "
           f"{out['datum'].nunique()} Tage ({out['datum'].min()} bis {out['datum'].max()})")
 

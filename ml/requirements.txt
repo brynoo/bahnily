@@ -4,3 +4,5 @@ scikit-learn>=1.5
 joblib>=1.4
 # nur fuer replay_2025.py: importiert den Produktionscode re19watch
 requests>=2.31
+# nur fuer export_csv.py (xlsx-Ausgabe)
+openpyxl>=3.1
